@@ -15,23 +15,25 @@ class Asteroid:
     def __init__(self, x, y):
         self.x = x
         self.y = y
-        self.radius = random.uniform(25, 60)
-        self.ore = self.radius * random.uniform(2.0, 4.0)
+        # Seed from position so all clients generate identical asteroids
+        rng = random.Random(hash((round(x, 1), round(y, 1))))
+        self.radius = rng.uniform(25, 60)
+        self.ore = self.radius * rng.uniform(2.0, 4.0)
         self.max_ore = self.ore
-        self.rotation = random.uniform(0, math.pi * 2)
-        self.rot_speed = random.uniform(-0.3, 0.3)
+        self.rotation = rng.uniform(0, math.pi * 2)
+        self.rot_speed = rng.uniform(-0.3, 0.3)
         self.depleted = False
         self.being_mined = False
         self.points = []
-        n_points = random.randint(7, 12)
+        n_points = rng.randint(7, 12)
         for i in range(n_points):
             angle = (i / n_points) * math.pi * 2
-            r = self.radius * random.uniform(0.7, 1.3)
+            r = self.radius * rng.uniform(0.7, 1.3)
             self.points.append((angle, r))
         self.color = (
-            random.randint(80, 120),
-            random.randint(60, 90),
-            random.randint(40, 60),
+            rng.randint(80, 120),
+            rng.randint(60, 90),
+            rng.randint(40, 60),
         )
         self.highlight = (
             min(255, self.color[0] + 40),

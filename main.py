@@ -319,6 +319,27 @@ class Game:
                          'type': p.proj_type, 'color': list(p.color)}
                         for p in self.world.projectiles if p.alive and p.owner in ('player', 'remote_player')
                     ][:30]
+                    # Sync probes
+                    self.server.probes_snapshot = [
+                        {'x': round(p.x, 1), 'y': round(p.y, 1),
+                         'state': p.state, 'cargo': round(p.cargo, 1)}
+                        for p in self.world.probes if p.alive
+                    ]
+                    # Sync depleted asteroids
+                    self.server.depleted_asteroids = [
+                        (round(a.x, 1), round(a.y, 1))
+                        for a in self.world.asteroids if a.depleted
+                    ]
+                # Client: sync depleted asteroids from host
+                if self.is_client and self.client and self.client.connected:
+                    with self.client.lock:
+                        depleted = list(self.client.depleted_asteroids)
+                    if depleted:
+                        depleted_set = set((round(d[0], 1), round(d[1], 1)) for d in depleted)
+                        for a in self.world.asteroids:
+                            key = (round(a.x, 1), round(a.y, 1))
+                            if key in depleted_set:
+                                a.depleted = True
                 if self.is_client and self.client and not self.client.connected:
                     self.hud.notify("Disconnected from host!", NEON_RED, 3.0)
                     self.is_client = False
@@ -917,11 +938,27 @@ class Game:
             if not pdata.get('alive', True) and respawn > 0:
                 draw_text(self.screen, f"RESPAWN: {respawn:.0f}s", int(sx), int(sy), NEON_RED, 12, center=True)
 
-        # Draw synced projectiles from server (client-side rendering)
+        # Draw synced entities from server (client-side rendering)
         if self.is_client and self.client:
             with self.client.lock:
                 remote_projs = list(self.client.remote_projectiles)
                 remote_beams = list(self.client.remote_beams)
+                remote_probes = list(self.client.remote_probes)
+
+            # Probes
+            for p in remote_probes:
+                px, py = p.get('x', 0), p.get('y', 0)
+                sx, sy = self.camera.world_to_screen(px, py)
+                if sx < -50 or sx > SCREEN_W + 50 or sy < -50 or sy > SCREEN_H + 50:
+                    continue
+                state = p.get('state', 'traveling')
+                color = NEON_GREEN if state != 'mining' else ORE_COLOR
+                glow = 0.5 + 0.5 * math.sin(self.time * 8)
+                draw_glow_circle(self.screen, color, (sx, sy), 4, 12, int(40 + 30 * glow))
+                cargo = p.get('cargo', 0)
+                if cargo > 0:
+                    draw_bar(self.screen, int(sx - 8), int(sy - 10), 16, 3,
+                            cargo / PROBE_CARRY, ORE_COLOR, (20, 15, 10))
 
             for p in remote_projs:
                 px, py = p.get('x', 0), p.get('y', 0)

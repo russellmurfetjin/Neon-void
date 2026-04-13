@@ -1,8 +1,6 @@
 Traceback (most recent call last):
   File "C:\Users\russe\OneDrive\Coding\acturrly high quality games\triple a again\main.py", line 1032, in <module>
-    game.run()
-    ~~~~~~~~^^
   File "C:\Users\russe\OneDrive\Coding\acturrly high quality games\triple a again\main.py", line 382, in run
-    sys.exit()
-    ~~~~~~~~^^
+    except Exception:
+    ^^
 SystemExit
