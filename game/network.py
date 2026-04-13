@@ -485,6 +485,7 @@ class GameClient:
         self.kill_feed: List[tuple] = []
         self.depleted_asteroids: List = []
         self.remote_probes: List = []
+        self.my_server_state: Optional[dict] = None  # authoritative position from server
         self.error = ""
         self._send_lock = threading.Lock()
 
@@ -550,7 +551,11 @@ class GameClient:
                     continue  # timeout, keep trying
                 if msg.get('type') == 'state':
                     with self.lock:
-                        self.remote_players = msg.get('players', {})
+                        all_players = msg.get('players', {})
+                        # Extract our own authoritative state
+                        my_id_str = str(self.my_id)
+                        self.my_server_state = all_players.get(my_id_str)
+                        self.remote_players = all_players
                         self.remote_beams = msg.get('beams', [])
                         self.remote_projectiles = msg.get('projectiles', [])
                         self.scores = msg.get('scores', {})

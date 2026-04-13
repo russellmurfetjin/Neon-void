@@ -330,10 +330,41 @@ class Game:
                         (round(a.x, 1), round(a.y, 1))
                         for a in self.world.asteroids if a.depleted
                     ]
-                # Client: sync depleted asteroids from host
+                # Client: reconcile with server authoritative state
                 if self.is_client and self.client and self.client.connected:
                     with self.client.lock:
+                        server_state = self.client.my_server_state
                         depleted = list(self.client.depleted_asteroids)
+
+                    # Server reconciliation — smoothly lerp toward authoritative position
+                    if server_state:
+                        srv_x = server_state.get('x', self.ship.x)
+                        srv_y = server_state.get('y', self.ship.y)
+                        srv_hp = server_state.get('hp', self.ship.core_hp)
+                        srv_alive = server_state.get('alive', True)
+
+                        # Smooth interpolation (80% toward server per tick)
+                        error_x = srv_x - self.ship.x
+                        error_y = srv_y - self.ship.y
+                        error_dist = math.sqrt(error_x ** 2 + error_y ** 2)
+
+                        if error_dist > 500:
+                            # Teleport if too far off
+                            self.ship.x = srv_x
+                            self.ship.y = srv_y
+                        elif error_dist > 2:
+                            # Smooth correction
+                            blend = min(0.3, error_dist / 200)
+                            self.ship.x += error_x * blend
+                            self.ship.y += error_y * blend
+
+                        # Sync HP and alive from server
+                        core = next((m for m in self.ship.modules if m.defn.id == "core"), None)
+                        if core:
+                            core.hp = srv_hp
+                        self.ship.alive = srv_alive
+
+                    # Sync depleted asteroids
                     if depleted:
                         depleted_set = set((round(d[0], 1), round(d[1], 1)) for d in depleted)
                         for a in self.world.asteroids:
@@ -383,7 +414,8 @@ class Game:
             if self.station_ui.active:
                 self.station_ui.draw(self.screen, self.ship, self.time)
             elif self.sector_map.active:
-                self.sector_map.draw(self.screen, self.world.sectors, self.ship, self.time)
+                self.sector_map.draw(self.screen, self.world.sectors, self.ship, self.time,
+                                    self._get_mp_players())
 
             # Multiplayer info overlay
             if self.is_host and self.server:
@@ -838,6 +870,18 @@ class Game:
         else:
             self.hud.notify("No asteroid in range", DIM_CYAN, 1.5)
 
+    def _get_mp_players(self):
+        """Get remote player dict for UI rendering."""
+        if self.is_host and self.server:
+            with self.server.lock:
+                return {str(pid): p.to_dict() for pid, p in self.server.remote_players.items()}
+        elif self.is_client and self.client:
+            players = self.client.get_players()
+            # Remove self
+            my_id = str(self.client.my_id) if self.client else ''
+            return {k: v for k, v in players.items() if k != my_id}
+        return None
+
     def _draw_mp_hud(self, scores, kill_feed, is_host):
         """Draw multiplayer scoreboard and kill feed."""
         # Kill feed (top-center)
@@ -1026,7 +1070,8 @@ class Game:
 
         # HUD (only when not in station/map)
         if not self.station_ui.active and not self.sector_map.active:
-            self.hud.draw(self.screen, self.ship, self.world, self.time, self.camera)
+            self.hud.draw(self.screen, self.ship, self.world, self.time, self.camera,
+                         self._get_mp_players())
 
     def _draw_indicators(self):
         if self.ship.docked:

@@ -27,7 +27,7 @@ class HUD:
             self.notification_timer -= dt
         self.low_fuel_flash += dt
 
-    def draw(self, surface, ship: Ship, world, time, camera=None):
+    def draw(self, surface, ship: Ship, world, time, camera=None, mp_players=None):
         # ── Top-left: Resources ────────────────────────────────────
         x, y = 15, 15
 
@@ -220,9 +220,9 @@ class HUD:
                          NEON_CYAN, 9)
 
         # Minimap
-        self._draw_minimap(surface, ship, world, camera)
+        self._draw_minimap(surface, ship, world, camera, mp_players)
 
-    def _draw_minimap(self, surface, ship: Ship, world, camera):
+    def _draw_minimap(self, surface, ship: Ship, world, camera, mp_players=None):
         mm_size = 130
         mm_x = SCREEN_W - mm_size - 15
         mm_y = SCREEN_H - mm_size - 15
@@ -284,6 +284,21 @@ class HUD:
                 if 0 <= px < mm_size and 0 <= py < mm_size:
                     pygame.draw.circle(mm_surf, poi.color, (px, py), 2)
 
+        # Remote players
+        if mp_players:
+            for pid, pdata in mp_players.items():
+                if not pdata.get('alive', True):
+                    continue
+                rpx, rpy = w2m(pdata.get('x', 0), pdata.get('y', 0))
+                if 0 <= rpx < mm_size and 0 <= rpy < mm_size:
+                    pc2 = tuple(pdata.get('color', [100, 255, 100]))
+                    pygame.draw.circle(mm_surf, pc2, (rpx, rpy), 3)
+                    # Name label
+                    name = pdata.get('name', '?')
+                    font = pygame.font.SysFont("consolas", 8)
+                    label = font.render(name[:6], True, pc2)
+                    mm_surf.blit(label, (max(0, min(rpx - 10, mm_size - 25)), max(0, rpy - 10)))
+
         # Player — bright pulsing dot so you can always see yourself
         pc = mm_size // 2
         pygame.draw.circle(mm_surf, WHITE, (pc, pc), 4)
@@ -321,7 +336,7 @@ class SectorMap:
             return True
         return False
 
-    def draw(self, surface, sectors: SectorManager, ship: Ship, time):
+    def draw(self, surface, sectors: SectorManager, ship: Ship, time, mp_players=None):
         if not self.active:
             return
 
@@ -390,6 +405,22 @@ class SectorMap:
                 draw_text(surface, f"{coord[0]},{coord[1]}",
                          int(sx + cs // 2), int(sy + cs - 10),
                          (50, 60, 70), 8, center=True)
+
+        # Remote players on sector map
+        if mp_players:
+            for pid, pdata in mp_players.items():
+                if not pdata.get('alive', True):
+                    continue
+                rp_coord = (int(math.floor(pdata.get('x', 0) / SECTOR_SIZE)),
+                           int(math.floor(pdata.get('y', 0) / SECTOR_SIZE)))
+                rdx = rp_coord[0] - player_coord[0]
+                rdy = rp_coord[1] - player_coord[1]
+                rpx = center_x + rdx * cs
+                rpy = center_y + rdy * cs
+                pc2 = tuple(pdata.get('color', [100, 255, 100]))
+                pygame.draw.circle(surface, pc2, (rpx, rpy), max(3, cs // 6))
+                draw_text(surface, pdata.get('name', '?')[:8],
+                         rpx, rpy - cs // 3, pc2, 9, center=True)
 
         # Player position
         px = center_x - cs // 2
