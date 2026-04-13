@@ -19,8 +19,20 @@ import pygame
 import sys
 import math
 import random
+import logging
 from typing import Optional
 from game.core import *
+
+# Set up logging to file + console
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(name)s] %(levelname)s: %(message)s',
+    handlers=[
+        logging.FileHandler('neonvoid.log', mode='w'),
+        logging.StreamHandler(sys.stdout),
+    ]
+)
+log = logging.getLogger("neonvoid")
 from game.ship import Ship
 from game.world import World
 from game.ui import HUD, StationUI, SectorMap, PauseMenu, MainMenu, GameOverScreen, LobbyUI

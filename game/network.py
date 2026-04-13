@@ -5,16 +5,19 @@ import json
 import time
 import math
 import random
+import logging
 from typing import Dict, List, Optional, Tuple
 
 DEFAULT_PORT = 7777
 BEACON_PORT = 7778
-TICK_RATE = 20  # state updates per second
+TICK_RATE = 20
 BUFFER_SIZE = 65536
+
+# Set up logging
+log = logging.getLogger("neonvoid.net")
 
 
 def get_local_ip():
-    """Get this machine's LAN IP address."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -25,22 +28,18 @@ def get_local_ip():
         return "127.0.0.1"
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-#  SHARED PROTOCOL
-# ═════════════════════════════════════════════════════════════════════════════
 def send_msg(sock, data: dict):
-    """Send a JSON message with length prefix."""
     try:
         raw = json.dumps(data, separators=(',', ':')).encode('utf-8')
         header = len(raw).to_bytes(4, 'big')
         sock.sendall(header + raw)
         return True
-    except Exception:
+    except Exception as e:
+        log.debug(f"send_msg failed: {e}")
         return False
 
 
 def recv_msg(sock) -> Optional[dict]:
-    """Receive a length-prefixed JSON message. Returns None on error."""
     try:
         header = b''
         while len(header) < 4:
@@ -50,6 +49,7 @@ def recv_msg(sock) -> Optional[dict]:
             header += chunk
         length = int.from_bytes(header, 'big')
         if length > BUFFER_SIZE:
+            log.warning(f"Message too large: {length}")
             return None
         data = b''
         while len(data) < length:
@@ -58,13 +58,13 @@ def recv_msg(sock) -> Optional[dict]:
                 return None
             data += chunk
         return json.loads(data.decode('utf-8'))
-    except Exception:
+    except socket.timeout:
+        return None
+    except Exception as e:
+        log.debug(f"recv_msg failed: {e}")
         return None
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-#  REMOTE PLAYER STATE (what the host tracks per connected client)
-# ═════════════════════════════════════════════════════════════════════════════
 class RemotePlayer:
     def __init__(self, player_id: int, name: str):
         self.id = player_id
@@ -80,14 +80,12 @@ class RemotePlayer:
         self.max_shield = 0.0
         self.alive = True
         self.color = (0, 255, 255)
-        # Input state from client
         self.input_keys = {'w': False, 's': False, 'a': False, 'd': False, 'shift': False}
         self.input_mouse_wx = 0.0
         self.input_mouse_wy = 0.0
         self.input_fire_gun = False
         self.input_fire_laser = False
         self.input_fire_missile = False
-        # Firing cooldown
         self.gun_cooldown = 0.0
         self.laser_cooldown = 0.0
         self.missile_cooldown = 0.0
@@ -100,13 +98,12 @@ class RemotePlayer:
             'angle': round(self.angle, 2),
             'hp': round(self.hp, 1), 'max_hp': round(self.max_hp, 1),
             'shield': round(self.shield, 1), 'max_shield': round(self.max_shield, 1),
-            'alive': self.alive,
-            'color': self.color,
+            'alive': self.alive, 'color': self.color,
         }
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  SERVER (runs on host)
+#  SERVER
 # ═════════════════════════════════════════════════════════════════════════════
 class GameServer:
     def __init__(self, port=DEFAULT_PORT, friendly_fire=False, auto_shoot_players=False):
@@ -114,21 +111,18 @@ class GameServer:
         self.friendly_fire = friendly_fire
         self.auto_shoot_players = auto_shoot_players
         self.running = False
-        self.clients: Dict[int, dict] = {}  # id -> {socket, thread, player}
+        self.clients: Dict[int, dict] = {}
         self.next_id = 1
         self.lock = threading.Lock()
         self.server_socket = None
-        self.accept_thread = None
-        # Remote player data
         self.remote_players: Dict[int, RemotePlayer] = {}
-        # Outgoing state snapshot
         self.state_snapshot = {}
         self.beams_snapshot = []
         self.projectiles_snapshot = []
-        self.host_ship_data = {}  # host's ship state for clients to see
-        self.pending_actions = []  # combat actions from remote players
-        self.kill_feed = []  # recent kill messages [(text, color, time)]
-        self.scores: Dict[int, int] = {0: 0}  # pid -> kill count (0 = host)
+        self.host_ship_data = {}
+        self.pending_actions = []
+        self.kill_feed = []
+        self.scores: Dict[int, int] = {0: 0}
 
     def start(self):
         self.running = True
@@ -137,11 +131,9 @@ class GameServer:
         self.server_socket.settimeout(1.0)
         self.server_socket.bind(('0.0.0.0', self.port))
         self.server_socket.listen(4)
-        self.accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
-        self.accept_thread.start()
-        # Start LAN broadcast beacon
-        self.beacon_thread = threading.Thread(target=self._beacon_loop, daemon=True)
-        self.beacon_thread.start()
+        threading.Thread(target=self._accept_loop, daemon=True).start()
+        threading.Thread(target=self._beacon_loop, daemon=True).start()
+        log.info(f"Server started on port {self.port}")
 
     def stop(self):
         self.running = False
@@ -158,9 +150,9 @@ class GameServer:
                 self.server_socket.close()
             except Exception:
                 pass
+        log.info("Server stopped")
 
     def _beacon_loop(self):
-        """Broadcast UDP beacon so LAN clients can discover this server."""
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -168,9 +160,7 @@ class GameServer:
             local_ip = get_local_ip()
             while self.running:
                 beacon = json.dumps({
-                    'game': 'NEON_VOID',
-                    'ip': local_ip,
-                    'port': self.port,
+                    'game': 'NEON_VOID', 'ip': local_ip, 'port': self.port,
                     'players': self.get_player_count(),
                     'friendly_fire': self.friendly_fire,
                     'auto_shoot': self.auto_shoot_players,
@@ -181,17 +171,18 @@ class GameServer:
                     pass
                 time.sleep(1.0)
             sock.close()
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning(f"Beacon loop error: {e}")
 
     def _accept_loop(self):
         while self.running:
             try:
                 conn, addr = self.server_socket.accept()
                 conn.settimeout(5.0)
-                # Receive join message
+                log.info(f"Connection from {addr}")
                 msg = recv_msg(conn)
                 if not msg or msg.get('type') != 'join':
+                    log.warning(f"Bad join from {addr}")
                     conn.close()
                     continue
 
@@ -204,38 +195,34 @@ class GameServer:
                     player.color = colors[pid % len(colors)]
                     self.remote_players[pid] = player
 
-                # Send welcome BEFORE starting client thread
                 send_msg(conn, {
-                    'type': 'welcome',
-                    'id': pid,
-                    'name': name,
-                    'color': player.color,
-                    'settings': {
-                        'friendly_fire': self.friendly_fire,
-                        'auto_shoot_players': self.auto_shoot_players,
-                    }
+                    'type': 'welcome', 'id': pid, 'name': name, 'color': player.color,
+                    'settings': {'friendly_fire': self.friendly_fire,
+                                 'auto_shoot_players': self.auto_shoot_players}
                 })
+                log.info(f"Player {pid} '{name}' joined from {addr}")
 
+                # Separate recv and send threads per client
+                conn.settimeout(0.5)
+                recv_thread = threading.Thread(target=self._client_recv, args=(pid, conn), daemon=True)
+                send_thread = threading.Thread(target=self._client_send, args=(pid, conn), daemon=True)
                 with self.lock:
-                    thread = threading.Thread(target=self._client_loop, args=(pid, conn), daemon=True)
-                    self.clients[pid] = {'socket': conn, 'thread': thread, 'player': player}
-                    thread.start()
+                    self.clients[pid] = {'socket': conn, 'recv': recv_thread, 'send': send_thread}
+                recv_thread.start()
+                send_thread.start()
             except socket.timeout:
                 continue
-            except Exception:
-                if not self.running:
-                    break
+            except Exception as e:
+                if self.running:
+                    log.warning(f"Accept error: {e}")
 
-    def _client_loop(self, pid, conn):
-        """Receive inputs from a client, send state updates."""
-        conn.settimeout(2.0)
-        last_send = 0
-        while self.running:
-            # Receive input
+    def _client_recv(self, pid, conn):
+        """Receive inputs from a client (separate thread)."""
+        while self.running and pid in self.clients:
             try:
                 msg = recv_msg(conn)
                 if msg is None:
-                    break
+                    continue  # timeout, try again
                 if msg.get('type') == 'input':
                     with self.lock:
                         if pid in self.remote_players:
@@ -247,52 +234,58 @@ class GameServer:
                             p.input_fire_laser = msg.get('laser', False)
                             p.input_fire_missile = msg.get('missile', False)
                 elif msg.get('type') == 'disconnect':
+                    log.info(f"Player {pid} sent disconnect")
                     break
-            except socket.timeout:
-                pass
-            except Exception:
+            except Exception as e:
+                log.debug(f"Recv error for player {pid}: {e}")
                 break
 
-            # Send state at tick rate
-            now = time.time()
-            if now - last_send > 1.0 / TICK_RATE:
-                last_send = now
+        log.info(f"Player {pid} recv loop ended")
+        self._remove_client(pid)
+
+    def _client_send(self, pid, conn):
+        """Send state updates to a client at tick rate (separate thread)."""
+        while self.running and pid in self.clients:
+            try:
                 with self.lock:
                     snapshot = self._build_snapshot()
                 if not send_msg(conn, snapshot):
+                    log.info(f"Send failed for player {pid}")
                     break
+            except Exception as e:
+                log.debug(f"Send error for player {pid}: {e}")
+                break
+            time.sleep(1.0 / TICK_RATE)
 
-        # Clean up
+        log.info(f"Player {pid} send loop ended")
+        self._remove_client(pid)
+
+    def _remove_client(self, pid):
         with self.lock:
-            self.clients.pop(pid, None)
+            if pid in self.clients:
+                try:
+                    self.clients[pid]['socket'].close()
+                except Exception:
+                    pass
+                del self.clients[pid]
+                log.info(f"Client {pid} removed")
             self.remote_players.pop(pid, None)
-        try:
-            conn.close()
-        except Exception:
-            pass
 
     def _build_snapshot(self):
         players = {str(pid): p.to_dict() for pid, p in self.remote_players.items()}
         if self.host_ship_data:
             players['0'] = self.host_ship_data
-        # Recent kill feed (last 5)
         feed = [(text, color) for text, color, t in self.kill_feed[-5:]]
         return {
-            'type': 'state',
-            'players': players,
-            'beams': self.beams_snapshot,
-            'projectiles': self.projectiles_snapshot,
+            'type': 'state', 'players': players,
+            'beams': self.beams_snapshot, 'projectiles': self.projectiles_snapshot,
             'scores': {str(k): v for k, v in self.scores.items()},
             'kill_feed': feed,
-            'settings': {
-                'friendly_fire': self.friendly_fire,
-                'auto_shoot_players': self.auto_shoot_players,
-            },
+            'settings': {'friendly_fire': self.friendly_fire,
+                         'auto_shoot_players': self.auto_shoot_players},
         }
 
     def update_players(self, dt, host_ship):
-        """Update remote player physics on the host. Called from game loop."""
-        # Capture host ship state for clients
         self.host_ship_data = {
             'id': 0, 'name': 'Host',
             'x': round(host_ship.x, 1), 'y': round(host_ship.y, 1),
@@ -300,16 +293,12 @@ class GameServer:
             'angle': round(host_ship.angle, 2),
             'hp': round(host_ship.core_hp, 1), 'max_hp': round(host_ship.core_max_hp, 1),
             'shield': round(host_ship.shield, 1), 'max_shield': round(host_ship.max_shield, 1),
-            'alive': host_ship.alive,
-            'color': [0, 255, 255],
+            'alive': host_ship.alive, 'color': [0, 255, 255],
         }
-
         with self.lock:
             for pid, p in self.remote_players.items():
                 if not p.alive:
                     continue
-
-                # Spawn new players near host if still at origin
                 if p.x == 0 and p.y == 0 and (host_ship.x != 0 or host_ship.y != 0):
                     p.x = host_ship.x + random.uniform(-100, 100)
                     p.y = host_ship.y + random.uniform(-100, 100)
@@ -317,18 +306,12 @@ class GameServer:
                     p.max_hp = host_ship.core_max_hp
 
                 thrust = host_ship.total_thrust
-                drag = 0.98
-                max_speed = 500.0
-
-                # Apply input
                 tx, ty = 0, 0
                 if p.input_keys.get('w'): ty -= 1
                 if p.input_keys.get('s'): ty += 1
                 if p.input_keys.get('a'): tx -= 1
                 if p.input_keys.get('d'): tx += 1
-
                 boosting = p.input_keys.get('shift', False)
-
                 mag = math.sqrt(tx * tx + ty * ty)
                 if mag > 0:
                     tx /= mag
@@ -336,47 +319,39 @@ class GameServer:
                     t = thrust * (2.5 if boosting else 1.0)
                     p.vx += tx * t * dt
                     p.vy += ty * t * dt
-
-                p.vx *= drag
-                p.vy *= drag
+                p.vx *= 0.98
+                p.vy *= 0.98
                 speed = math.sqrt(p.vx ** 2 + p.vy ** 2)
-                if speed > max_speed:
-                    p.vx = p.vx / speed * max_speed
-                    p.vy = p.vy / speed * max_speed
-
+                if speed > 500:
+                    p.vx = p.vx / speed * 500
+                    p.vy = p.vy / speed * 500
                 p.x += p.vx * dt
                 p.y += p.vy * dt
                 p.angle = math.atan2(p.input_mouse_wy - p.y, p.input_mouse_wx - p.x)
 
-                # Cooldowns
                 p.gun_cooldown = max(0, p.gun_cooldown - dt)
                 p.laser_cooldown = max(0, p.laser_cooldown - dt)
                 p.missile_cooldown = max(0, p.missile_cooldown - dt)
 
-                # Combat — queue actions for the host world to process
                 if p.input_fire_gun and p.gun_cooldown <= 0:
-                    p.gun_cooldown = 0.125  # 8 shots/sec
+                    p.gun_cooldown = 0.125
                     self.pending_actions.append({
                         'type': 'gun', 'pid': pid,
-                        'x': p.x, 'y': p.y, 'angle': p.angle,
-                        'color': p.color,
+                        'x': p.x, 'y': p.y, 'angle': p.angle, 'color': p.color,
                     })
                 if p.input_fire_laser and p.laser_cooldown <= 0:
                     p.laser_cooldown = 0.3
                     self.pending_actions.append({
                         'type': 'laser', 'pid': pid,
-                        'x': p.x, 'y': p.y, 'angle': p.angle,
-                        'color': p.color,
+                        'x': p.x, 'y': p.y, 'angle': p.angle, 'color': p.color,
                     })
                 if p.input_fire_missile and p.missile_cooldown <= 0:
                     p.missile_cooldown = 1.5
                     self.pending_actions.append({
                         'type': 'missile', 'pid': pid,
-                        'x': p.x, 'y': p.y, 'angle': p.angle,
-                        'color': p.color,
+                        'x': p.x, 'y': p.y, 'angle': p.angle, 'color': p.color,
                     })
 
-                # HP/shield from host ship (simplified)
                 p.max_hp = host_ship.core_max_hp
                 p.max_shield = host_ship.max_shield
 
@@ -386,7 +361,6 @@ class GameServer:
 
     def add_kill(self, killer_name, victim_name, color=(255, 255, 255)):
         self.kill_feed.append((f"{killer_name} destroyed {victim_name}", color, time.time()))
-        # Prune old entries
         now = time.time()
         self.kill_feed = [(t, c, ts) for t, c, ts in self.kill_feed if now - ts < 10]
 
@@ -409,20 +383,18 @@ class GameServer:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  LAN SCANNER (discovers servers on local network)
+#  LAN SCANNER
 # ═════════════════════════════════════════════════════════════════════════════
 class LANScanner:
     def __init__(self):
         self.running = False
         self.lock = threading.Lock()
-        self.found_servers: Dict[str, dict] = {}  # ip -> server info
-        self.thread = None
+        self.found_servers: Dict[str, dict] = {}
 
     def start(self):
         self.running = True
         self.found_servers.clear()
-        self.thread = threading.Thread(target=self._scan_loop, daemon=True)
-        self.thread.start()
+        threading.Thread(target=self._scan_loop, daemon=True).start()
 
     def stop(self):
         self.running = False
@@ -446,7 +418,6 @@ class LANScanner:
                     pass
                 except Exception:
                     pass
-                # Prune stale servers (not seen in 5 seconds)
                 now = time.time()
                 with self.lock:
                     stale = [ip for ip, s in self.found_servers.items()
@@ -454,8 +425,8 @@ class LANScanner:
                     for ip in stale:
                         del self.found_servers[ip]
             sock.close()
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning(f"Scanner error: {e}")
 
     def get_servers(self) -> Dict[str, dict]:
         with self.lock:
@@ -463,39 +434,37 @@ class LANScanner:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  CLIENT (runs on joining player)
+#  CLIENT
 # ═════════════════════════════════════════════════════════════════════════════
 class GameClient:
     def __init__(self):
         self.connected = False
         self.socket = None
-        self.thread = None
         self.my_id = 0
         self.my_name = ""
         self.my_color = (0, 255, 255)
         self.settings = {}
         self.lock = threading.Lock()
-        # Latest state from server
         self.remote_players: Dict[str, dict] = {}
         self.remote_beams: List[dict] = []
         self.remote_projectiles: List[dict] = []
         self.scores: Dict[str, int] = {}
         self.kill_feed: List[tuple] = []
         self.error = ""
+        self._send_lock = threading.Lock()
 
     def connect(self, host_ip: str, port: int = DEFAULT_PORT, name: str = "Player"):
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.settimeout(5.0)
             self.socket.connect((host_ip, port))
+            log.info(f"Connected to {host_ip}:{port}")
 
-            # Send join
             send_msg(self.socket, {'type': 'join', 'name': name})
-
-            # Receive welcome
             msg = recv_msg(self.socket)
             if not msg or msg.get('type') != 'welcome':
                 self.error = "Server rejected connection"
+                log.warning("No welcome received")
                 self.socket.close()
                 return False
 
@@ -504,14 +473,14 @@ class GameClient:
             self.my_color = tuple(msg.get('color', [0, 255, 255]))
             self.settings = msg.get('settings', {})
             self.connected = True
+            log.info(f"Joined as {self.my_name} (id={self.my_id})")
 
-            # Start receive thread
-            self.socket.settimeout(2.0)
-            self.thread = threading.Thread(target=self._recv_loop, daemon=True)
-            self.thread.start()
+            self.socket.settimeout(0.5)
+            threading.Thread(target=self._recv_loop, daemon=True).start()
             return True
         except Exception as e:
             self.error = str(e)
+            log.warning(f"Connect failed: {e}")
             return False
 
     def disconnect(self):
@@ -522,31 +491,28 @@ class GameClient:
                 self.socket.close()
             except Exception:
                 pass
+        log.info("Disconnected")
 
     def send_input(self, keys, mouse_wx, mouse_wy, fire_gun, fire_laser, fire_missile):
         if not self.connected:
             return
-        try:
-            send_msg(self.socket, {
-                'type': 'input',
-                'keys': keys,
-                'mwx': round(mouse_wx, 1),
-                'mwy': round(mouse_wy, 1),
-                'gun': fire_gun,
-                'laser': fire_laser,
-                'missile': fire_missile,
-            })
-        except Exception:
-            self.connected = False
+        with self._send_lock:
+            try:
+                send_msg(self.socket, {
+                    'type': 'input', 'keys': keys,
+                    'mwx': round(mouse_wx, 1), 'mwy': round(mouse_wy, 1),
+                    'gun': fire_gun, 'laser': fire_laser, 'missile': fire_missile,
+                })
+            except Exception as e:
+                log.debug(f"Input send failed: {e}")
+                self.connected = False
 
     def _recv_loop(self):
         while self.connected:
             try:
                 msg = recv_msg(self.socket)
                 if msg is None:
-                    self.connected = False
-                    self.error = "Disconnected from host"
-                    break
+                    continue  # timeout, keep trying
                 if msg.get('type') == 'state':
                     with self.lock:
                         self.remote_players = msg.get('players', {})
@@ -555,12 +521,13 @@ class GameClient:
                         self.scores = msg.get('scores', {})
                         self.kill_feed = msg.get('kill_feed', [])
                         self.settings = msg.get('settings', self.settings)
-            except socket.timeout:
-                continue
-            except Exception:
-                self.connected = False
-                self.error = "Connection lost"
+            except Exception as e:
+                if self.connected:
+                    log.warning(f"Recv error: {e}")
+                    self.connected = False
+                    self.error = "Connection lost"
                 break
+        log.info("Client recv loop ended")
 
     def get_players(self) -> Dict[str, dict]:
         with self.lock:
