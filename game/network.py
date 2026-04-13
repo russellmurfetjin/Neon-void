@@ -32,6 +32,7 @@ def send_msg(sock, data: dict):
     try:
         raw = json.dumps(data, separators=(',', ':')).encode('utf-8')
         header = len(raw).to_bytes(4, 'big')
+        sock.settimeout(3.0)
         sock.sendall(header + raw)
         return True
     except Exception as e:

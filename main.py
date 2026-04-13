@@ -76,6 +76,8 @@ class Game:
         self._new_game()
 
     def _new_game(self):
+        # Clean up multiplayer if active
+        self._stop_multiplayer()
         self.ship = Ship()
         self.world = World()
         self.particles = ParticleSystem()
@@ -83,6 +85,7 @@ class Game:
         self.station_ui.close()
         self.sector_map.active = False
         self.pause_menu.active = False
+        self.lobby.close()
         self.hud = HUD()
         self.time = 0.0
         self.total_credits_earned = 0
@@ -451,13 +454,21 @@ class Game:
 
     def _stop_multiplayer(self):
         if self.server:
-            self.server.stop()
+            try:
+                self.server.stop()
+            except Exception:
+                pass
             self.server = None
         if self.client:
-            self.client.disconnect()
+            try:
+                self.client.disconnect()
+            except Exception:
+                pass
             self.client = None
         self.is_host = False
         self.is_client = False
+        if hasattr(self, 'world') and self.world:
+            self.world.on_kill_callback = None
 
     def _check_for_update(self):
         """Check for game updates."""

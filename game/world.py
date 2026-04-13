@@ -59,8 +59,8 @@ class Asteroid:
             pygame.draw.polygon(surface, self.color, pts)
             pygame.draw.polygon(surface, self.highlight, pts, 2)
 
-        if not self.depleted:
-            fuel_ratio = self.ore / self.max_ore
+        if not self.depleted and self.max_ore > 0:
+            fuel_ratio = max(0, min(1, self.ore / self.max_ore))
             indicator_color = (
                 int(lerp(80, 255, fuel_ratio)),
                 int(lerp(40, 160, fuel_ratio)),

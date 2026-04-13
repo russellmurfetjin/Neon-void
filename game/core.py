@@ -437,10 +437,17 @@ def draw_glow_circle(surface, color, center, radius, glow_radius=None, alpha=60)
 
 
 def draw_bar(surface, x, y, w, h, ratio, color, bg_color=(20, 20, 30), border_color=None):
-    ratio = clamp(ratio, 0, 1)
+    # Guard against NaN, inf, or bad values
+    try:
+        ratio = max(0.0, min(1.0, float(ratio)))
+    except (ValueError, TypeError):
+        ratio = 0.0
+    if w <= 0 or h <= 0:
+        return
     pygame.draw.rect(surface, bg_color, (x, y, w, h))
-    if ratio > 0:
-        pygame.draw.rect(surface, color, (x, y, int(w * ratio), h))
+    fill_w = max(0, int(w * ratio))
+    if fill_w > 0:
+        pygame.draw.rect(surface, color, (x, y, fill_w, h))
     if border_color:
         pygame.draw.rect(surface, border_color, (x, y, w, h), 1)
 
