@@ -284,6 +284,22 @@ class HUD:
                 if 0 <= px < mm_size and 0 <= py < mm_size:
                     pygame.draw.circle(mm_surf, poi.color, (px, py), 2)
 
+        # Buildings (beacons + turrets)
+        for b in world.buildings:
+            if not b.alive:
+                continue
+            bx2, by2 = w2m(b.x, b.y)
+            if 0 <= bx2 < mm_size and 0 <= by2 < mm_size:
+                if b.defn.id == 'beacon':
+                    pygame.draw.circle(mm_surf, NEON_CYAN, (bx2, by2), 3)
+                    pygame.draw.circle(mm_surf, NEON_CYAN, (bx2, by2), 6, 1)
+                elif b.defn.id == 'base_turret':
+                    pygame.draw.circle(mm_surf, NEON_GREEN, (bx2, by2), 2)
+                elif b.defn.id == 'chest':
+                    pygame.draw.circle(mm_surf, NEON_YELLOW, (bx2, by2), 2)
+                else:
+                    mm_surf.set_at((bx2, by2), b.defn.glow)
+
         # Remote players
         if mp_players:
             for pid, pdata in mp_players.items():
@@ -336,7 +352,7 @@ class SectorMap:
             return True
         return False
 
-    def draw(self, surface, sectors: SectorManager, ship: Ship, time, mp_players=None):
+    def draw(self, surface, sectors: SectorManager, ship: Ship, time, mp_players=None, buildings=None):
         if not self.active:
             return
 
@@ -405,6 +421,25 @@ class SectorMap:
                 draw_text(surface, f"{coord[0]},{coord[1]}",
                          int(sx + cs // 2), int(sy + cs - 10),
                          (50, 60, 70), 8, center=True)
+
+        # Beacons on sector map
+        if buildings:
+            for b in buildings:
+                if not b.alive or b.defn.id != 'beacon':
+                    continue
+                b_coord = (int(math.floor(b.x / SECTOR_SIZE)),
+                          int(math.floor(b.y / SECTOR_SIZE)))
+                bdx = b_coord[0] - player_coord[0]
+                bdy = b_coord[1] - player_coord[1]
+                bsx = center_x + bdx * cs
+                bsy = center_y + bdy * cs
+                pulse2 = 0.5 + 0.5 * math.sin(time * 3)
+                pygame.draw.circle(surface, NEON_CYAN, (bsx, bsy), max(2, cs // 8))
+                pygame.draw.circle(surface, safe_color(0, 255 * pulse2, 255 * pulse2),
+                                 (bsx, bsy), max(4, cs // 5), 1)
+                if b.label:
+                    draw_text(surface, b.label, bsx, bsy - cs // 3 - 4,
+                             NEON_CYAN, 8, center=True)
 
         # Remote players on sector map
         if mp_players:
@@ -1182,7 +1217,7 @@ class PauseMenu:
     def __init__(self):
         self.active = False
         self.selected = 0
-        self.buttons = ['RESUME', 'SAVE', 'UPDATE', 'RESTART', 'QUIT']
+        self.buttons = ['RESUME', 'SAVE', 'UPDATE', 'MENU', 'RESTART', 'QUIT']
         self.save_msg = ""
         self.save_msg_timer = 0.0
         self.updater = None
@@ -1263,6 +1298,9 @@ class PauseMenu:
             elif label == 'RESTART':
                 base_color = NEON_ORANGE
                 dim_color = (80, 50, 0)
+            elif label == 'MENU':
+                base_color = NEON_PURPLE
+                dim_color = (60, 30, 80)
             elif label == 'SAVE':
                 base_color = NEON_GREEN
                 dim_color = DIM_GREEN
@@ -1545,6 +1583,7 @@ class MainMenu:
         self.title_anim = 0.0
         self.stars_offset = 0.0
         self.has_save = False
+        self.respawn_enabled = True
         self._check_save()
 
     def _check_save(self):
@@ -1582,6 +1621,10 @@ class MainMenu:
             join_rect = pygame.Rect(SCREEN_W // 2 + 5, mp_y, 75, 35)
             if join_rect.collidepoint(mx, my):
                 return 'join'
+            # Respawn toggle
+            resp_rect = pygame.Rect(SCREEN_W // 2 - 80, mp_y + 42, 160, 28)
+            if resp_rect.collidepoint(mx, my):
+                self.respawn_enabled = not self.respawn_enabled
         return None
 
     def draw(self, surface, time):
@@ -1639,7 +1682,14 @@ class MainMenu:
         draw_text(surface, "JOIN", join_rect.centerx, join_rect.centery,
                  NEON_PURPLE if j_hover else (120, 60, 180), 14, center=True)
 
-        controls_y = SCREEN_H // 2 + (175 if self.has_save else 135)
+        # Respawn toggle
+        resp_rect = pygame.Rect(SCREEN_W // 2 - 80, mp_y + 42, 160, 28)
+        resp_c = NEON_GREEN if self.respawn_enabled else NEON_RED
+        draw_neon_rect(surface, resp_c, resp_rect, 1)
+        draw_text(surface, f"Respawn: {'ON' if self.respawn_enabled else 'OFF (permadeath)'}",
+                 resp_rect.centerx, resp_rect.centery, resp_c, 11, center=True)
+
+        controls_y = SCREEN_H // 2 + (215 if self.has_save else 175)
         controls = [
             "WASD - Fly your ship        SHIFT - Boost",
             "RMB - Laser beam (pierces!)  MMB - Homing missiles",

@@ -126,6 +126,7 @@ class GameServer:
         self.pending_actions = []
         self.depleted_asteroids = []
         self.probes_snapshot = []
+        self.enemies_snapshot = []
         self.kill_feed = []
         self.scores: Dict[int, int] = {0: 0}
 
@@ -302,6 +303,8 @@ class GameServer:
             snapshot['depleted'] = self.depleted_asteroids
         if self.probes_snapshot:
             snapshot['probes'] = self.probes_snapshot
+        if self.enemies_snapshot:
+            snapshot['enemies'] = self.enemies_snapshot
         if feed:
             snapshot['kill_feed'] = feed
         if self.scores:
@@ -485,6 +488,7 @@ class GameClient:
         self.kill_feed: List[tuple] = []
         self.depleted_asteroids: List = []
         self.remote_probes: List = []
+        self.remote_enemies: List = []
         self.my_server_state: Optional[dict] = None  # authoritative position from server
         self.error = ""
         self._send_lock = threading.Lock()
@@ -562,6 +566,7 @@ class GameClient:
                         self.kill_feed = msg.get('kill_feed', [])
                         self.depleted_asteroids = msg.get('depleted', [])
                         self.remote_probes = msg.get('probes', [])
+                        self.remote_enemies = msg.get('enemies', [])
                         self.settings = msg.get('settings', self.settings)
             except Exception as e:
                 if self.connected:

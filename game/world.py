@@ -6,6 +6,7 @@ from typing import List, Optional, Tuple
 from game.core import *
 from game.ship import Ship
 from game.sector import SectorManager, Sector, Station, POI, PatrolGroup
+from game.building import Building, BUILDING_DEFS
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -717,6 +718,7 @@ class World:
         self.projectiles: List[Projectile] = []
         self.probes: List[MiningProbe] = []
         self.pickups: List[Pickup] = []
+        self.buildings: List[Building] = []
         self._active_beams: List[dict] = []
         self.game_time = 0.0
         self.void_titan_killed = False
@@ -1405,22 +1407,24 @@ class World:
                     audio.play('hit', 0.4)
                     camera.shake(5)
 
-        # Collision: player projectiles vs asteroids
+        # Collision: ALL projectiles vs asteroids (asteroids block everything)
         for p in self.projectiles:
-            if p.owner != 'player' or not p.alive:
+            if not p.alive:
                 continue
             for a in self.asteroids:
                 if a.depleted:
                     continue
                 if dist(p.x, p.y, a.x, a.y) < a.radius:
                     p.alive = False
-                    chip = min(a.ore, p.damage * 0.5)
-                    a.ore -= chip
-                    # Shooting gives mostly ore, a little fuel
-                    ore_space = ship.ore_capacity - ship.ore
-                    ship.ore += min(chip * 0.7, ore_space)
-                    ship.fuel += min(chip * 0.2, ship.fuel_capacity - ship.fuel)
-                    ship.credits += int(chip)
+                    # Only player projectiles mine resources
+                    if p.owner in ('player', 'remote_player'):
+                        chip = min(a.ore, p.damage * 0.5)
+                        a.ore -= chip
+                        ore_space = ship.ore_capacity - ship.ore
+                        ship.ore += min(chip * 0.7, ore_space)
+                        ship.fuel += min(chip * 0.2, ship.fuel_capacity - ship.fuel)
+                        ship.credits += int(chip)
+                    # All projectiles spark on impact
                     particles.burst(p.x, p.y, 10, 90, 0.25, NEON_ORANGE, 2)
                     particles.burst(p.x, p.y, 3, 40, 0.15, WHITE, 1)
                     if a.ore <= 0:
@@ -1447,6 +1451,66 @@ class World:
             self.fire_turrets(ship, particles, audio)
             self.fire_autolasers(ship, particles, audio, camera)
 
+        # Update buildings
+        for b in self.buildings:
+            b.update(dt)
+            if not b.alive:
+                continue
+            # Base turret — auto-fire at enemies
+            if b.defn.id == 'base_turret' and b.fire_cooldown <= 0:
+                best_e = None
+                best_d = 400
+                for e in self.enemies:
+                    if not e.alive:
+                        continue
+                    d = dist(b.x, b.y, e.x, e.y)
+                    if d < best_d:
+                        best_d = d
+                        best_e = e
+                if best_e:
+                    b.fire_cooldown = 0.4
+                    aim = angle_to(b.x, b.y, best_e.x, best_e.y)
+                    b.rotation = aim
+                    proj = Projectile(
+                        b.x + math.cos(aim) * b.defn.radius,
+                        b.y + math.sin(aim) * b.defn.radius,
+                        math.cos(aim) * LASER_SPEED * 0.7,
+                        math.sin(aim) * LASER_SPEED * 0.7,
+                        8, 'player', 'bullet', color=NEON_GREEN
+                    )
+                    self.projectiles.append(proj)
+                    particles.emit(
+                        b.x + math.cos(aim) * b.defn.radius,
+                        b.y + math.sin(aim) * b.defn.radius,
+                        random.uniform(-15, 15), random.uniform(-15, 15),
+                        0.1, NEON_GREEN, 1.5)
+
+            # Repair pad — heal nearby ship
+            if b.defn.id == 'repair_pad' and ship.alive:
+                d = dist(b.x, b.y, ship.x, ship.y)
+                if d < 120:
+                    core = next((m for m in ship.modules if m.defn.id == "core"), None)
+                    if core and core.hp < core.max_hp:
+                        core.hp = min(core.max_hp, core.hp + 3.0 * dt)
+
+        # Barricade blocking enemy projectiles
+        for p in self.projectiles:
+            if p.owner == 'enemy' and p.alive:
+                for b in self.buildings:
+                    if not b.alive or b.defn.id == 'beacon':
+                        continue
+                    if dist(p.x, p.y, b.x, b.y) < b.defn.radius:
+                        p.alive = False
+                        b.hp -= p.damage
+                        particles.burst(p.x, p.y, 5, 60, 0.15, b.defn.glow, 1.5)
+                        if b.hp <= 0:
+                            b.alive = False
+                            particles.burst(b.x, b.y, 30, 120, 0.6, b.defn.glow, 3)
+                        break
+
+        # Remove dead buildings
+        self.buildings = [b for b in self.buildings if b.alive]
+
     def draw(self, surface, camera, time):
         vis = camera.visible_rect()
 
@@ -1466,6 +1530,10 @@ class World:
                 px, py = camera.world_to_screen(poi.x, poi.y)
                 if -50 < px < SCREEN_W + 50 and -50 < py < SCREEN_H + 50:
                     poi.draw(surface, camera, time)
+
+        # Buildings
+        for b in self.buildings:
+            b.draw(surface, camera, time)
 
         # Asteroids
         for a in self.asteroids:

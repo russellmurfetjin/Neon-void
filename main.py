@@ -23,6 +23,7 @@ import random
 import logging
 from typing import Optional
 from game.core import *
+from game.building import Building, BUILDING_DEFS
 
 # Set up logging to file + console
 _game_dir = os.path.dirname(os.path.abspath(__file__))
@@ -72,6 +73,11 @@ class Game:
 
         self.time = 0.0
         self.total_credits_earned = 0
+        self.build_mode = False
+        self.build_selected = 0
+        self.build_list = list(BUILDING_DEFS.keys())
+        self.respawn_enabled = True  # toggle on main menu
+        self.respawn_timer = 0.0
 
         self._new_game()
 
@@ -136,8 +142,9 @@ class Game:
                 if self.menu.active:
                     result = self.menu.handle_event(event)
                     if result == 'new':
-                        pass  # _new_game already called in __init__
+                        self.respawn_enabled = self.menu.respawn_enabled
                     elif result == 'continue':
+                        self.respawn_enabled = self.menu.respawn_enabled
                         if load_game(self):
                             self.hud.notify("Save loaded!", NEON_GREEN, 2.0)
                         else:
@@ -166,10 +173,16 @@ class Game:
                         self.pause_menu.show_save_result(success)
                     elif result == 'update':
                         self._check_for_update()
+                    elif result == 'menu':
+                        save_game(self)
+                        self._stop_multiplayer()
+                        self.pause_menu.active = False
+                        self.menu.active = True
+                        self.menu._check_save()
                     elif result == 'restart':
                         self._new_game()
                     elif result == 'quit':
-                        save_game(self)  # auto-save on quit
+                        save_game(self)
                         running = False
                     continue
 
@@ -207,6 +220,19 @@ class Game:
                         self.ship.refinery_enabled = not self.ship.refinery_enabled
                         state = "ON" if self.ship.refinery_enabled else "OFF (ore preserved for selling)"
                         self.hud.notify(f"Refinery: {state}", NEON_GREEN if self.ship.refinery_enabled else NEON_ORANGE, 2.0)
+                    elif event.key == pygame.K_b:
+                        self.build_mode = not self.build_mode
+                        if self.build_mode:
+                            self.hud.notify("BUILD MODE — Scroll to select, LMB to place, B to exit", NEON_PURPLE, 3.0)
+
+                # Build mode events
+                if self.build_mode and not self.ship.docked:
+                    if event.type == pygame.MOUSEWHEEL:
+                        self.build_selected = (self.build_selected + event.y) % len(self.build_list)
+                    elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                        mx2, my2 = pygame.mouse.get_pos()
+                        wmx2, wmy2 = self.camera.screen_to_world(mx2, my2)
+                        self._try_place_building(wmx2, wmy2)
 
             # ── UPDATE ────────────────────────────────────────────
             if self.lobby.active:
@@ -325,6 +351,17 @@ class Game:
                          'state': p.state, 'cargo': round(p.cargo, 1)}
                         for p in self.world.probes if p.alive
                     ]
+                    # Sync enemies (cap at 20 nearest for bandwidth)
+                    sorted_enemies = sorted(self.world.enemies,
+                        key=lambda e: (e.x - self.ship.x)**2 + (e.y - self.ship.y)**2)
+                    self.server.enemies_snapshot = [
+                        {'x': round(e.x, 1), 'y': round(e.y, 1),
+                         'angle': round(e.angle, 2), 'hp': round(e.hp, 1),
+                         'max_hp': round(e.max_hp, 1), 'r': e.radius,
+                         'c': list(e.color), 'bc': list(e.body_color),
+                         'et': e.enemy_type, 'b': e.is_boss}
+                        for e in sorted_enemies[:20] if e.alive
+                    ]
                     # Sync depleted asteroids
                     self.server.depleted_asteroids = [
                         (round(a.x, 1), round(a.y, 1))
@@ -387,15 +424,27 @@ class Game:
 
                 # Check death
                 if not self.ship.alive:
-                    self.game_over.activate(
-                        len(self.world.sectors.discovered),
-                        self.world.sectors.farthest_distance,
-                        self.total_credits_earned
-                    )
                     self.audio.play('explosion_big', 0.7)
                     self.camera.shake(25)
                     self.particles.burst(self.ship.x, self.ship.y, 100, 300, 1.0, NEON_CYAN, 3)
                     self.particles.burst(self.ship.x, self.ship.y, 60, 200, 0.8, NEON_ORANGE, 4)
+                    if self.respawn_enabled:
+                        # Respawn at nearest station with penalty
+                        self.ship.alive = True
+                        core = next((m for m in self.ship.modules if m.defn.id == "core"), None)
+                        if core:
+                            core.hp = core.max_hp
+                        self.ship.shield = self.ship.max_shield
+                        penalty = self.ship.credits // 3
+                        self.ship.credits -= penalty
+                        self._distress_warp()
+                        self.hud.notify(f"DESTROYED! Respawned. Lost ${penalty}", NEON_RED, 4.0)
+                    else:
+                        self.game_over.activate(
+                            len(self.world.sectors.discovered),
+                            self.world.sectors.farthest_distance,
+                            self.total_credits_earned
+                        )
 
             # Camera
             self.camera.follow(self.ship.x, self.ship.y)
@@ -415,7 +464,7 @@ class Game:
                 self.station_ui.draw(self.screen, self.ship, self.time)
             elif self.sector_map.active:
                 self.sector_map.draw(self.screen, self.world.sectors, self.ship, self.time,
-                                    self._get_mp_players())
+                                    self._get_mp_players(), self.world.buildings)
 
             # Multiplayer info overlay
             if self.is_host and self.server:
@@ -442,7 +491,10 @@ class Game:
         sys.exit()
 
     def _try_dock_or_interact(self):
-        # Try docking first
+        # Try chest interaction first
+        if self._try_interact_building():
+            return
+        # Try docking
         for sector in self.world.sectors.get_loaded_sectors():
             if sector.station and sector.station.can_dock(self.ship.x, self.ship.y):
                 self.ship.docked = True
@@ -804,6 +856,61 @@ class Game:
                 self.particles.burst(px + math.cos(angle) * 20, py + math.sin(angle) * 20,
                                     8, 80, 0.2, NEON_PURPLE, 2)
 
+    def _try_place_building(self, wx, wy):
+        """Place a building at world position."""
+        bid = self.build_list[self.build_selected]
+        defn = BUILDING_DEFS[bid]
+        if self.ship.credits < defn.cost:
+            self.hud.notify(f"Need ${defn.cost} for {defn.name}", NEON_RED, 1.5)
+            return
+        # Check not too close to another building
+        for b in self.world.buildings:
+            if dist(wx, wy, b.x, b.y) < b.defn.radius + defn.radius:
+                self.hud.notify("Too close to another structure", NEON_RED, 1.5)
+                return
+        self.ship.credits -= defn.cost
+        building = Building(wx, wy, bid)
+        if bid == 'beacon':
+            building.label = f"Beacon {len([b for b in self.world.buildings if b.defn.id == 'beacon']) + 1}"
+        self.world.buildings.append(building)
+        self.particles.burst(wx, wy, 15, 80, 0.3, defn.glow, 2)
+        self.audio.play('buy', 0.5)
+        self.hud.notify(f"Placed {defn.name} (-${defn.cost})", NEON_GREEN, 1.5)
+
+    def _try_interact_building(self):
+        """Interact with nearest chest (F key)."""
+        for b in self.world.buildings:
+            if not b.alive or b.defn.id != 'chest':
+                continue
+            d = dist(self.ship.x, self.ship.y, b.x, b.y)
+            if d < 60:
+                # Toggle: deposit if holding resources, withdraw if chest has stuff
+                if self.ship.ore > 0:
+                    b.stored_ore += self.ship.ore
+                    self.hud.notify(f"Deposited {int(self.ship.ore)} ore", ORE_COLOR, 1.5)
+                    self.ship.ore = 0
+                elif self.ship.credits > 50:
+                    deposit = self.ship.credits // 2
+                    b.stored_credits += deposit
+                    self.ship.credits -= deposit
+                    self.hud.notify(f"Deposited ${deposit}", NEON_YELLOW, 1.5)
+                elif b.stored_credits > 0 or b.stored_ore > 0:
+                    self.ship.credits += b.stored_credits
+                    ore_space = self.ship.ore_capacity - self.ship.ore
+                    taken_ore = min(b.stored_ore, ore_space)
+                    self.ship.ore += taken_ore
+                    msg = f"Withdrew ${b.stored_credits}"
+                    if taken_ore > 0:
+                        msg += f" + {int(taken_ore)} ore"
+                    b.stored_credits = 0
+                    b.stored_ore -= taken_ore
+                    self.hud.notify(msg, NEON_YELLOW, 1.5)
+                else:
+                    self.hud.notify("Chest is empty. Carry ore or credits to deposit.", DIM_CYAN, 1.5)
+                self.audio.play('pickup', 0.4)
+                return True
+        return False
+
     def _distress_warp(self):
         """Emergency warp to nearest known station. Costs half your credits."""
         self.ship.distress_charging = False
@@ -988,6 +1095,7 @@ class Game:
                 remote_projs = list(self.client.remote_projectiles)
                 remote_beams = list(self.client.remote_beams)
                 remote_probes = list(self.client.remote_probes)
+                remote_enemies = list(self.client.remote_enemies)
 
             # Probes
             for p in remote_probes:
@@ -1003,6 +1111,59 @@ class Game:
                 if cargo > 0:
                     draw_bar(self.screen, int(sx - 8), int(sy - 10), 16, 3,
                             cargo / PROBE_CARRY, ORE_COLOR, (20, 15, 10))
+
+            # Enemies from host
+            for e in remote_enemies:
+                ex, ey = e.get('x', 0), e.get('y', 0)
+                esx, esy = self.camera.world_to_screen(ex, ey)
+                if esx < -100 or esx > SCREEN_W + 100 or esy < -100 or esy > SCREEN_H + 100:
+                    continue
+                ea = e.get('angle', 0)
+                er = e.get('r', 15)
+                ec = tuple(e.get('c', [255, 160, 0]))
+                ebc = tuple(e.get('bc', [70, 50, 20]))
+                cos_a = math.cos(ea)
+                sin_a = math.sin(ea)
+                is_big = e.get('b') or e.get('et') == 'miniboss'
+                if is_big:
+                    pts = [
+                        (esx + cos_a * er * 1.5, esy + sin_a * er * 1.5),
+                        (esx + cos_a * (-er * 0.3) - sin_a * (-er * 1.2),
+                         esy + sin_a * (-er * 0.3) + cos_a * (-er * 1.2)),
+                        (esx + cos_a * (-er * 0.8) - sin_a * (-er * 0.5),
+                         esy + sin_a * (-er * 0.8) + cos_a * (-er * 0.5)),
+                        (esx + cos_a * (-er * 1.2), esy + sin_a * (-er * 1.2)),
+                        (esx + cos_a * (-er * 0.8) - sin_a * (er * 0.5),
+                         esy + sin_a * (-er * 0.8) + cos_a * (er * 0.5)),
+                        (esx + cos_a * (-er * 0.3) - sin_a * (er * 1.2),
+                         esy + sin_a * (-er * 0.3) + cos_a * (er * 1.2)),
+                    ]
+                else:
+                    pts = [
+                        (esx + cos_a * er * 1.3, esy + sin_a * er * 1.3),
+                        (esx - sin_a * er * 0.8, esy + cos_a * er * 0.8),
+                        (esx - cos_a * er * 0.8, esy - sin_a * er * 0.8),
+                        (esx + sin_a * er * 0.8, esy - cos_a * er * 0.8),
+                    ]
+                pygame.draw.polygon(self.screen, ebc, pts)
+                pygame.draw.polygon(self.screen, ec, pts, 2)
+                # Eye glow
+                draw_glow_circle(self.screen, ec,
+                    (esx + cos_a * er * 0.4, esy + sin_a * er * 0.4), 3, 8, 40)
+                # HP bar
+                ehp = e.get('hp', 1)
+                emhp = e.get('max_hp', 1)
+                if emhp > 0 and ehp < emhp:
+                    draw_bar(self.screen, int(esx - er), int(esy - er - 8),
+                            int(er * 2), 4, ehp / emhp, ec, (20, 20, 30))
+                # Label
+                et = e.get('et', 'normal')
+                if et == 'boss':
+                    draw_text(self.screen, "BOSS", int(esx), int(esy - er - 16), NEON_PINK, 10, center=True)
+                elif et == 'miniboss':
+                    draw_text(self.screen, "MINIBOSS", int(esx), int(esy - er - 16), NEON_CYAN, 9, center=True)
+                elif et == 'elite':
+                    draw_text(self.screen, "ELITE", int(esx), int(esy - er - 16), NEON_YELLOW, 9, center=True)
 
             for p in remote_projs:
                 px, py = p.get('x', 0), p.get('y', 0)
@@ -1064,6 +1225,32 @@ class Game:
             pygame.draw.line(self.screen, color, (mx - size, my), (mx + size, my), 1)
             pygame.draw.line(self.screen, color, (mx, my - size), (mx, my + size), 1)
             pygame.draw.circle(self.screen, color, (mx, my), size, 1)
+
+        # Build mode overlay
+        if self.build_mode and self.ship.alive and not self.ship.docked:
+            mx, my = pygame.mouse.get_pos()
+            wmx, wmy = self.camera.screen_to_world(mx, my)
+            bid = self.build_list[self.build_selected]
+            defn = BUILDING_DEFS[bid]
+            # Preview circle
+            can_afford = self.ship.credits >= defn.cost
+            preview_c = NEON_GREEN if can_afford else NEON_RED
+            pygame.draw.circle(self.screen, preview_c, (mx, my), defn.radius, 2)
+            draw_text(self.screen, f"{defn.name} (${defn.cost})", mx, my - defn.radius - 14,
+                     preview_c, 12, center=True)
+            draw_text(self.screen, defn.description, mx, my + defn.radius + 8,
+                     DIM_CYAN, 9, center=True)
+            # Build bar
+            by = 20
+            draw_text(self.screen, "BUILD MODE [B] — Scroll to select, LMB to place",
+                     SCREEN_W // 2, by, NEON_PURPLE, 13, center=True)
+            by += 20
+            for i, bid2 in enumerate(self.build_list):
+                d2 = BUILDING_DEFS[bid2]
+                selected = i == self.build_selected
+                c = NEON_PURPLE if selected else (60, 40, 80)
+                txt = f"> {d2.name} ${d2.cost}" if selected else f"  {d2.name} ${d2.cost}"
+                draw_text(self.screen, txt, SCREEN_W // 2 - 80, by + i * 16, c, 11)
 
         # Nearby indicators
         self._draw_indicators()

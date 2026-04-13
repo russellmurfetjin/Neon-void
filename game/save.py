@@ -49,12 +49,14 @@ def save_game(game) -> bool:
             "void_titan_killed": world.void_titan_killed,
             "titan_victory_shown": world.titan_victory_shown,
             "missions_completed": world.missions_completed,
-            # Sectors - only save persistent state (discovery, POI loot, patrol clears)
+            # Sectors
             "sectors": {
                 "discovered": [list(c) for c in sectors.discovered],
                 "farthest_distance": sectors.farthest_distance,
                 "sector_state": {},
             },
+            # Buildings
+            "buildings": [b.to_dict() for b in world.buildings if b.alive],
         }
 
         # Save per-sector persistent state (POI/patrol status)
@@ -203,6 +205,13 @@ def load_game(game) -> bool:
         world.asteroids.clear()
         world._loaded_asteroid_sectors.clear()
         world._sync_entities()
+
+        # Restore buildings
+        from game.building import Building, BUILDING_DEFS
+        world.buildings.clear()
+        for bd in data.get("buildings", []):
+            if bd.get('bid') in BUILDING_DEFS:
+                world.buildings.append(Building.from_dict(bd))
 
         # Restore asteroid depletion
         for astate in data.get("asteroid_states", []):
