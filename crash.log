@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "C:\Users\russe\OneDrive\Coding\acturrly high quality games\triple a again\main.py", line 860, in <module>
+    game.run()
+    ~~~~~~~~^^
+  File "C:\Users\russe\OneDrive\Coding\acturrly high quality games\triple a again\main.py", line 378, in run
+    sys.exit()
+    ~~~~~~~~^^
+SystemExit

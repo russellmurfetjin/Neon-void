@@ -273,7 +273,12 @@ class AudioManager:
             self.enabled = False
             return
         self.sounds = {}
-        self._generate_sounds()
+        try:
+            self._generate_sounds()
+        except Exception:
+            # numpy might not be installed — audio still works, just no sounds
+            self.enabled = False
+            return
         self.music_playing = False
 
     def _generate_sounds(self):

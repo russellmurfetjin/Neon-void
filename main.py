@@ -17,6 +17,7 @@ Controls:
 """
 import pygame
 import sys
+import os
 import math
 import random
 import logging
@@ -24,11 +25,12 @@ from typing import Optional
 from game.core import *
 
 # Set up logging to file + console
+_game_dir = os.path.dirname(os.path.abspath(__file__))
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(name)s] %(levelname)s: %(message)s',
     handlers=[
-        logging.FileHandler('neonvoid.log', mode='w'),
+        logging.FileHandler(os.path.join(_game_dir, 'neonvoid.log'), mode='w'),
         logging.StreamHandler(sys.stdout),
     ]
 )
@@ -296,16 +298,13 @@ class Game:
                 # Multiplayer: update remote players and sync state
                 if self.is_host and self.server:
                     self.server.update_players(dt, self.ship)
-                    # Process remote player combat actions
                     self._process_remote_combat()
-                    # Feed beams to clients
+                    self._process_pvp(dt)
                     self.server.beams_snapshot = [
                         {'sx': b['sx'], 'sy': b['sy'], 'ex': b['ex'], 'ey': b['ey'],
                          'color': list(b['color']), 'life': b['life']}
                         for b in self.world._active_beams
                     ]
-                    # Scale enemies with player count (co-op balance)
-                    # Already handled by more targets being available
                 if self.is_client and self.client and not self.client.connected:
                     self.hud.notify("Disconnected from host!", NEON_RED, 3.0)
                     self.is_client = False
@@ -503,6 +502,144 @@ class Game:
         self.pause_menu.save_msg_timer = 5.0
         self.pause_menu.updater.check()
 
+    def _process_pvp(self, dt):
+        """Host: handle player-vs-player interactions (friendly fire, collisions)."""
+        if not self.server:
+            return
+
+        with self.server.lock:
+            remote_players = list(self.server.remote_players.values())
+
+        if not remote_players:
+            return
+
+        # Friendly fire: host's projectiles hit remote players
+        if self.server.friendly_fire:
+            for p in self.world.projectiles:
+                if p.owner != 'player' or not p.alive:
+                    continue
+                for rp in remote_players:
+                    if not rp.alive:
+                        continue
+                    if dist(p.x, p.y, rp.x, rp.y) < 20:
+                        rp.hp -= p.damage
+                        p.alive = False
+                        self.particles.burst(rp.x, rp.y, 10, 80, 0.3, tuple(rp.color), 2)
+                        self.audio.play('hit', 0.3)
+                        if rp.hp <= 0:
+                            rp.alive = False
+                            rp.hp = 0
+                            self.particles.burst(rp.x, rp.y, 50, 200, 0.8, tuple(rp.color), 4)
+                            self.server.add_kill("Host", rp.name, [0, 255, 255])
+                            self.server.add_score(0)
+                            self.audio.play('explosion_big', 0.5)
+                            self.camera.shake(10)
+                            # Respawn after 3 seconds
+                            rp.hp = rp.max_hp
+                            rp.alive = True
+                            rp.x = self.ship.x + random.uniform(-200, 200)
+                            rp.y = self.ship.y + random.uniform(-200, 200)
+                        break
+
+            # Check beams vs remote players
+            for beam in self.world._active_beams:
+                for rp in remote_players:
+                    if not rp.alive:
+                        continue
+                    # Point-to-line distance
+                    sx, sy = beam['sx'], beam['sy']
+                    ex, ey = beam['ex'], beam['ey']
+                    abx, aby = ex - sx, ey - sy
+                    apx, apy = rp.x - sx, rp.y - sy
+                    ab_sq = abx * abx + aby * aby
+                    if ab_sq > 0:
+                        t = max(0, min(1, (apx * abx + apy * aby) / ab_sq))
+                        d = dist(rp.x, rp.y, sx + t * abx, sy + t * aby)
+                        if d < 25:
+                            rp.hp -= 8
+                            self.particles.burst(rp.x, rp.y, 8, 60, 0.2, tuple(rp.color), 2)
+                            if rp.hp <= 0:
+                                rp.alive = False
+                                self.particles.burst(rp.x, rp.y, 50, 200, 0.8, tuple(rp.color), 4)
+                                self.server.add_kill("Host", rp.name, [0, 255, 255])
+                                self.server.add_score(0)
+                                # Respawn
+                                rp.hp = rp.max_hp
+                                rp.alive = True
+                                rp.x = self.ship.x + random.uniform(-200, 200)
+                                rp.y = self.ship.y + random.uniform(-200, 200)
+
+        # Remote player projectiles hit the host
+        if self.server.friendly_fire and self.ship.alive and self.ship.invuln_timer <= 0:
+            ship_r = max(self.ship.grid_w, self.ship.grid_h) * 5
+            for p in self.world.projectiles:
+                if p.owner != 'remote_player' or not p.alive:
+                    continue
+                if dist(p.x, p.y, self.ship.x, self.ship.y) < ship_r:
+                    self.ship.take_damage(p.damage)
+                    p.alive = False
+                    self.particles.burst(self.ship.x, self.ship.y, 10, 80, 0.3, NEON_RED, 2)
+                    self.audio.play('hit', 0.4)
+                    self.camera.shake(5)
+                    if not self.ship.alive:
+                        pid = getattr(p, '_remote_pid', -1)
+                        name = self.server.get_player_name(pid)
+                        self.server.add_kill(name, "Host", [255, 100, 100])
+                        self.server.add_score(pid)
+
+        # Remote projectiles also damage enemies (co-op)
+        for p in self.world.projectiles:
+            if p.owner != 'remote_player' or not p.alive:
+                continue
+            for e in self.world.enemies:
+                if not e.alive:
+                    continue
+                if dist(p.x, p.y, e.x, e.y) < e.radius + 5:
+                    e.take_hit(p.damage, self.particles)
+                    p.alive = False
+                    self.audio.play('hit', 0.3)
+                    if not e.alive:
+                        pid = getattr(p, '_remote_pid', -1)
+                        name = self.server.get_player_name(pid)
+                        label = "BOSS" if e.is_boss else "enemy"
+                        self.server.add_kill(name, label, [100, 255, 100])
+                        self.server.add_score(pid)
+                        from game.world import Pickup
+                        self.world.pickups.append(Pickup(e.x, e.y, 'credits', e.credit_value))
+                        self.audio.play('explosion', 0.5)
+                    break
+
+        # Auto-shoot players (turrets target other players)
+        if self.server.auto_shoot_players:
+            for rp in remote_players:
+                if not rp.alive:
+                    continue
+                d = dist(self.ship.x, self.ship.y, rp.x, rp.y)
+                if d < 500:
+                    for m in self.ship.turret_modules:
+                        if m.cooldown > 0:
+                            continue
+                        # Check if there's a closer enemy first
+                        closer_enemy = False
+                        for e in self.world.enemies:
+                            if e.alive and dist(self.ship.x, self.ship.y, e.x, e.y) < d:
+                                closer_enemy = True
+                                break
+                        if closer_enemy:
+                            continue
+                        m.cooldown = 1.0 / m.defn.fire_rate
+                        from game.world import Projectile
+                        aim = angle_to(self.ship.x, self.ship.y, rp.x, rp.y)
+                        proj = Projectile(
+                            self.ship.x + math.cos(aim) * 15,
+                            self.ship.y + math.sin(aim) * 15,
+                            math.cos(aim) * LASER_SPEED * 0.8,
+                            math.sin(aim) * LASER_SPEED * 0.8,
+                            m.defn.damage, 'player', 'bullet', color=NEON_RED
+                        )
+                        self.world.projectiles.append(proj)
+                        self.audio.play('laser', 0.06)
+
     def _process_remote_combat(self):
         """Host: process combat actions from remote players."""
         if not self.server:
@@ -520,8 +657,9 @@ class Game:
                 proj = Projectile(
                     px + math.cos(a) * 20, py + math.sin(a) * 20,
                     math.cos(a) * LASER_SPEED * 0.9, math.sin(a) * LASER_SPEED * 0.9,
-                    5, 'player', 'bullet', color=color
+                    5, 'remote_player', 'bullet', color=color
                 )
+                proj._remote_pid = action['pid']
                 self.world.projectiles.append(proj)
                 self.particles.burst(px + math.cos(a) * 20, py + math.sin(a) * 20,
                                     3, 60, 0.1, color, 1.5)
@@ -557,6 +695,26 @@ class Game:
                                 self.world.pickups.append(
                                     __import__('game.world', fromlist=['Pickup']).Pickup(
                                         e.x, e.y, 'credits', e.credit_value))
+                # Friendly fire: beam hits host ship
+                if self.server.friendly_fire and self.ship.alive and self.ship.invuln_timer <= 0:
+                    abx2, aby2 = ex - sx, ey - sy
+                    apx2, apy2 = self.ship.x - sx, self.ship.y - sy
+                    ab_sq2 = abx2 * abx2 + aby2 * aby2
+                    if ab_sq2 > 0:
+                        t2 = max(0, min(1, (apx2 * abx2 + apy2 * aby2) / ab_sq2))
+                        d2 = dist(self.ship.x, self.ship.y, sx + t2 * abx2, sy + t2 * aby2)
+                        ship_r = max(self.ship.grid_w, self.ship.grid_h) * 5
+                        if d2 < ship_r:
+                            self.ship.take_damage(8)
+                            self.particles.burst(self.ship.x, self.ship.y, 10, 80, 0.3, NEON_RED, 2)
+                            self.audio.play('hit', 0.4)
+                            self.camera.shake(5)
+                            pid = action['pid']
+                            if not self.ship.alive:
+                                name = self.server.get_player_name(pid)
+                                self.server.add_kill(name, "Host", color)
+                                self.server.add_score(pid)
+
                 self.particles.burst(sx, sy, 6, 80, 0.12, color, 2)
 
             elif action['type'] == 'missile':
@@ -572,8 +730,9 @@ class Game:
                 proj = Projectile(
                     px + math.cos(angle) * 20, py + math.sin(angle) * 20,
                     math.cos(angle) * MISSILE_SPEED, math.sin(angle) * MISSILE_SPEED,
-                    35, 'player', 'missile', target=best_enemy, color=NEON_PURPLE
+                    35, 'remote_player', 'missile', target=best_enemy, color=NEON_PURPLE
                 )
+                proj._remote_pid = action['pid']
                 self.world.projectiles.append(proj)
                 self.particles.burst(px + math.cos(angle) * 20, py + math.sin(angle) * 20,
                                     8, 80, 0.2, NEON_PURPLE, 2)
@@ -856,28 +1015,24 @@ if __name__ == "__main__":
     try:
         game = Game()
         game.run()
-    except Exception as e:
+    except BaseException as e:
         import traceback
-        # Show error on screen before closing
+        error_text = traceback.format_exc()
+
+        # Write crash to file FIRST — this always works
+        crash_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash.log")
+        with open(crash_path, "w") as f:
+            f.write(error_text)
+
+        # Print to terminal
+        print(error_text)
+        print(f"\nCrash saved to: {crash_path}")
+        print("Paste the contents of crash.log to get help.")
+
+        # Try to keep terminal open
         try:
-            pygame.init()
-            screen = pygame.display.set_mode((800, 400))
-            screen.fill((10, 0, 0))
-            font = pygame.font.SysFont("consolas", 14)
-            lines = traceback.format_exc().split('\n')
-            for i, line in enumerate(lines[-15:]):
-                text = font.render(line, True, (255, 100, 100))
-                screen.blit(text, (10, 10 + i * 18))
-            hint = font.render("Press any key to close...", True, (200, 200, 200))
-            screen.blit(hint, (10, 370))
-            pygame.display.flip()
-            waiting = True
-            while waiting:
-                for event in pygame.event.get():
-                    if event.type in (pygame.QUIT, pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN):
-                        waiting = False
+            input("Press ENTER to close...")
         except Exception:
             pass
-        traceback.print_exc()
-        pygame.quit()
+
         sys.exit(1)
