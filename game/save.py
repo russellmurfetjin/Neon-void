@@ -30,6 +30,7 @@ def save_game(game) -> bool:
                 "shield": ship.shield,
                 "alive": ship.alive,
                 "docked": ship.docked,
+                "refinery_enabled": ship.refinery_enabled,
                 "sectors_discovered": ship.sectors_discovered,
                 "farthest_sector": ship.farthest_sector,
                 "modules": [
@@ -136,6 +137,7 @@ def load_game(game) -> bool:
         ship.shield = sd["shield"]
         ship.alive = sd["alive"]
         ship.docked = sd["docked"]
+        ship.refinery_enabled = sd.get("refinery_enabled", True)
         ship.sectors_discovered = sd.get("sectors_discovered", 0)
         ship.farthest_sector = sd.get("farthest_sector", 0)
         ship.invuln_timer = 0

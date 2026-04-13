@@ -46,6 +46,8 @@ class Asteroid:
             self.being_mined = False
 
     def draw(self, surface, camera, time):
+        if self.depleted:
+            return  # don't draw destroyed asteroids
         sx, sy = camera.world_to_screen(self.x, self.y)
         pts = []
         for angle, r in self.points:
@@ -122,18 +124,20 @@ class MiningProbe:
             dy = ship.y - self.y
             d = math.sqrt(dx * dx + dy * dy)
             if d < 30:
-                # Deliver fuel
-                space = ship.fuel_capacity - ship.fuel
+                # Deliver ore to ship's ore hold
+                space = ship.ore_capacity - ship.ore
                 delivered = min(self.cargo, space)
-                ship.fuel += delivered
-                # Minerals in the asteroid are also worth credits
-                credits_earned = int(self.cargo * 3)
-                ship.credits += credits_earned
+                ship.ore += delivered
+                # Overflow goes to fuel directly
+                overflow = self.cargo - delivered
+                if overflow > 0:
+                    fuel_space = ship.fuel_capacity - ship.fuel
+                    ship.fuel += min(overflow * 0.5, fuel_space)
                 self.alive = False
                 ship.active_probes -= 1
-                particles.burst(ship.x, ship.y, 10, 40, 0.3, NEON_ORANGE, 2)
-                if credits_earned > 0:
-                    particles.burst(ship.x, ship.y, 6, 30, 0.3, (255, 255, 0), 1.5)
+                particles.burst(ship.x, ship.y, 10, 40, 0.3, ORE_COLOR, 2)
+                if delivered > 0:
+                    particles.burst(ship.x, ship.y, 6, 30, 0.3, NEON_GREEN, 1.5)
             else:
                 self.x += (dx / d) * PROBE_SPEED * 1.3 * dt
                 self.y += (dy / d) * PROBE_SPEED * 1.3 * dt
@@ -156,7 +160,7 @@ class MiningProbe:
 
         if self.cargo > 0:
             ratio = self.cargo / self.max_cargo
-            draw_bar(surface, int(sx - 8), int(sy - 10), 16, 3, ratio, NEON_ORANGE, (20, 15, 10))
+            draw_bar(surface, int(sx - 8), int(sy - 10), 16, 3, ratio, ORE_COLOR, (20, 15, 10))
 
         if self.state == 'mining':
             tsx, tsy = camera.world_to_screen(self.target.x, self.target.y)
@@ -1121,8 +1125,11 @@ class World:
             if d < a.radius:
                 chip = min(a.ore, total_damage * 0.4)
                 a.ore -= chip
-                ship.fuel += min(chip * 0.5, ship.fuel_capacity - ship.fuel)
-                ship.credits += int(chip * 2)
+                # Shooting gives mostly ore, a little fuel
+                ore_space = ship.ore_capacity - ship.ore
+                ship.ore += min(chip * 0.7, ore_space)
+                ship.fuel += min(chip * 0.2, ship.fuel_capacity - ship.fuel)
+                ship.credits += int(chip)
                 particles.burst(a.x, a.y, 8, 70, 0.2, NEON_ORANGE, 2)
                 particles.burst(a.x, a.y, 3, 40, 0.15, WHITE, 1)
                 if a.ore <= 0:
@@ -1405,14 +1412,13 @@ class World:
                     continue
                 if dist(p.x, p.y, a.x, a.y) < a.radius:
                     p.alive = False
-                    # Chip off fuel + credits
                     chip = min(a.ore, p.damage * 0.5)
                     a.ore -= chip
-                    fuel_gain = chip * 0.5
-                    credit_gain = int(chip * 2)
-                    space = ship.fuel_capacity - ship.fuel
-                    ship.fuel += min(fuel_gain, space)
-                    ship.credits += credit_gain
+                    # Shooting gives mostly ore, a little fuel
+                    ore_space = ship.ore_capacity - ship.ore
+                    ship.ore += min(chip * 0.7, ore_space)
+                    ship.fuel += min(chip * 0.2, ship.fuel_capacity - ship.fuel)
+                    ship.credits += int(chip)
                     particles.burst(p.x, p.y, 10, 90, 0.25, NEON_ORANGE, 2)
                     particles.burst(p.x, p.y, 3, 40, 0.15, WHITE, 1)
                     if a.ore <= 0:

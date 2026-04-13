@@ -193,6 +193,7 @@ class Ship:
         # Probes
         self.max_probes = 0
         self.active_probes = 0
+        self.refinery_enabled = True
 
         # State
         self.alive = True
@@ -451,8 +452,8 @@ class Ship:
             if core and core.hp < core.max_hp:
                 core.hp = min(core.max_hp, core.hp + self.total_hull_regen * dt)
 
-        # Refinery: convert ore -> fuel
-        if self.ore > 0 and self.fuel < self.fuel_capacity:
+        # Refinery: convert ore -> fuel (toggleable with R)
+        if self.refinery_enabled and self.ore > 0 and self.fuel < self.fuel_capacity:
             convert = min(self.refinery_rate * dt, self.ore, self.fuel_capacity - self.fuel)
             self.ore -= convert
             self.fuel += convert

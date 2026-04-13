@@ -72,8 +72,14 @@ class HUD:
         y += 18
 
         # Refinery status
-        if ship.refinery_rate > 0 and ship.ore > 0:
-            draw_text(surface, f"REFINING: {ship.refinery_rate:.0f}/s", x, y, NEON_GREEN, 11)
+        if ship.refinery_rate > 0:
+            if ship.refinery_enabled:
+                if ship.ore > 0:
+                    draw_text(surface, f"REFINING: {ship.refinery_rate:.0f}/s [R]", x, y, NEON_GREEN, 11)
+                else:
+                    draw_text(surface, f"Refinery idle [R]", x, y, DIM_GREEN, 11)
+            else:
+                draw_text(surface, f"Refinery OFF [R] (sell ore!)", x, y, NEON_ORANGE, 11)
             y += 18
 
         # Fuel range
@@ -152,7 +158,7 @@ class HUD:
                 ry += 15
 
         # ── Bottom: Controls hint ─────────────────────────────────
-        draw_text(surface, "LMB:Gun  RMB:Laser  MMB:Missile  E:Mine  F:Dock  H:Distress  TAB:Map",
+        draw_text(surface, "LMB:Gun  RMB:Laser  MMB:Missile  E:Mine  R:Refinery  F:Dock  TAB:Map",
                  SCREEN_W // 2, SCREEN_H - 18, (60, 70, 90), 11, center=True)
 
         # ── Bottom-left: Probes ───────────────────────────────────
@@ -438,15 +444,15 @@ class StationUI:
         self.active = False
         self.station: Optional[Station] = None
         self.world_ref = None  # set when opened
-        self.current_tab = 'overview'  # 'overview', 'modules'
+        self.current_tab = 'services'  # 'services', 'modules'
         self.builder = ShipBuilder()
 
     def open(self, station: Station, world=None):
         self.active = True
         self.station = station
         self.world_ref = world
-        self.current_tab = 'modules'
-        self.builder.active = True
+        self.current_tab = 'services'
+        self.builder.active = False
         self.builder.shop_items = list(station.shop_inventory)
         self.builder.station_ref = station
         self.builder.selected_module_id = None
@@ -466,8 +472,21 @@ class StationUI:
 
         if self.current_tab == 'modules' and self.builder.active:
             self.builder.handle_event(event, ship, audio)
+            # Still check tab clicks even in builder mode
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                mx2, my2 = event.pos
+                tab_y = 70
+                tabs = [('services', 'SERVICES'), ('modules', 'MODULES')]
+                tx = SCREEN_W // 2 - 120
+                for tab_id, tab_label in tabs:
+                    tab_rect = pygame.Rect(tx, tab_y, 110, 30)
+                    if tab_rect.collidepoint(mx2, my2):
+                        self.current_tab = tab_id
+                        self.builder.active = (tab_id == 'modules')
+                        return None
+                    tx += 130
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                self.current_tab = 'overview'
+                self.current_tab = 'services'
                 self.builder.active = False
                 return None
             return None
@@ -481,7 +500,7 @@ class StationUI:
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             # Tab buttons
             tab_y = 70
-            tabs = [('overview', 'OVERVIEW'), ('modules', 'MODULES')]
+            tabs = [('services', 'SERVICES'), ('modules', 'MODULES')]
             tx = SCREEN_W // 2 - 120
             for tab_id, tab_label in tabs:
                 tab_rect = pygame.Rect(tx, tab_y, 110, 30)
@@ -494,7 +513,7 @@ class StationUI:
                     return None
                 tx += 130
 
-            if self.current_tab == 'overview':
+            if self.current_tab == 'services':
                 # Refuel button
                 btn_y = 180
                 btn_rect = pygame.Rect(SCREEN_W // 2 - 100, btn_y, 200, 35)
@@ -575,12 +594,11 @@ class StationUI:
         if not self.active or not self.station:
             return
 
-        # Modules tab
+        # Modules tab — draw builder but overlay tabs on top
         if self.current_tab == 'modules' and self.builder.active:
             self.builder.draw(surface, ship, time)
-            # Back button overlay
-            draw_text(surface, "ESC: Back to station", SCREEN_W // 2, SCREEN_H - 45,
-                     DIM_CYAN, 12, center=True)
+            # Draw tab bar on top of builder
+            self._draw_tabs(surface, time)
             return
 
         # Station overlay
@@ -595,25 +613,39 @@ class StationUI:
                  SCREEN_W // 2, 50, DIM_CYAN, 12, center=True)
 
         # Tab buttons
-        tab_y = 70
+        self._draw_tabs(surface, time)
+
+        # Credits
         mx, my = pygame.mouse.get_pos()
-        tabs = [('overview', 'OVERVIEW'), ('modules', 'MODULES')]
+        draw_text(surface, f"Credits: ${ship.credits}", SCREEN_W // 2, 120,
+                 NEON_YELLOW, 16, center=True)
+
+        if self.current_tab == 'services':
+            self._draw_overview(surface, ship, time, mx, my)
+
+    def _draw_tabs(self, surface, time):
+        """Draw the tab bar at the top — visible on all station screens."""
+        # Background strip
+        tab_bg = pygame.Surface((SCREEN_W, 40), pygame.SRCALPHA)
+        tab_bg.fill((5, 5, 15, 200))
+        surface.blit(tab_bg, (0, 60))
+
+        mx, my = pygame.mouse.get_pos()
+        tabs = [('services', 'SERVICES'), ('modules', 'MODULES')]
         tx = SCREEN_W // 2 - 120
         for tab_id, tab_label in tabs:
-            tab_rect = pygame.Rect(tx, tab_y, 110, 30)
+            tab_rect = pygame.Rect(tx, 65, 110, 30)
             active = self.current_tab == tab_id
-            color = NEON_CYAN if active else DIM_CYAN
+            hover = tab_rect.collidepoint(mx, my)
+            color = NEON_CYAN if active else (NEON_BLUE if hover else DIM_CYAN)
             draw_neon_rect(surface, color, tab_rect, 2 if active else 1)
             draw_text(surface, tab_label, tab_rect.centerx, tab_rect.centery,
                      color, 13, center=True)
             tx += 130
 
-        # Credits
-        draw_text(surface, f"Credits: ${ship.credits}", SCREEN_W // 2, 120,
-                 NEON_YELLOW, 16, center=True)
-
-        if self.current_tab == 'overview':
-            self._draw_overview(surface, ship, time, mx, my)
+        # Undock hint
+        draw_text(surface, "[F] Undock  [ESC] Undock", SCREEN_W // 2, SCREEN_H - 20,
+                 (50, 60, 70), 10, center=True)
 
     def _draw_overview(self, surface, ship, time, mx, my):
         btn_y = 180
@@ -739,6 +771,7 @@ class ShipBuilder:
         self.active = False
         self.cell_size = 48
         self.selected_module_id: Optional[str] = None
+        self.moving_module: Optional[PlacedModule] = None  # module being moved
         self.hover_gx = -1
         self.hover_gy = -1
         self.scroll_offset = 0
@@ -784,6 +817,7 @@ class ShipBuilder:
                 gx = (mx - ox) // self.cell_size
                 gy = (my - oy) // self.cell_size
                 if 0 <= gx < ship.grid_w and 0 <= gy < ship.grid_h:
+                    # Placing a module from shop
                     if self.selected_module_id:
                         if ship.can_place(self.selected_module_id, gx, gy):
                             cost = MODULE_DEFS[self.selected_module_id].cost
@@ -794,6 +828,17 @@ class ShipBuilder:
                                 self._use_stock(self.selected_module_id)
                                 audio.play('buy', 0.5)
                         return True
+                    # Placing a module being moved
+                    elif self.moving_module:
+                        m = self.moving_module
+                        if ship.can_place(m.defn.id, gx, gy, exclude=m):
+                            m.gx = gx
+                            m.gy = gy
+                            ship._recalc_stats()
+                            audio.play('buy', 0.3)
+                        self.moving_module = None
+                        return True
+                    # Sell mode
                     elif self.remove_mode:
                         m = ship.cell_occupied(gx, gy)
                         if m and m.defn.id != 'core':
@@ -803,6 +848,12 @@ class ShipBuilder:
                             ship.credits += refund
                             audio.play('pickup', 0.4)
                         return True
+                    # Pick up module to move it
+                    else:
+                        m = ship.cell_occupied(gx, gy)
+                        if m and m.defn.id != 'core':
+                            self.moving_module = m
+                            return True
 
                 shop_x = ox + ship.grid_w * self.cell_size + 60
                 shop_y = oy
@@ -834,6 +885,7 @@ class ShipBuilder:
 
             elif event.button == 3:
                 self.selected_module_id = None
+                self.moving_module = None
                 self.remove_mode = False
                 return True
 
@@ -876,16 +928,18 @@ class ShipBuilder:
 
         draw_text(surface, "SHIP BUILDER", SCREEN_W // 2, 15, NEON_CYAN, 24, center=True)
         draw_text(surface, f"Credits: ${ship.credits}", SCREEN_W // 2, 42, NEON_YELLOW, 16, center=True)
-        if self.selected_module_id:
+        if self.moving_module:
+            draw_text(surface, f"Moving: {self.moving_module.defn.name} — Click grid to place, right-click cancel",
+                     SCREEN_W // 2, 62, NEON_BLUE, 12, center=True)
+        elif self.selected_module_id:
             defn = MODULE_DEFS[self.selected_module_id]
-            stock = self._get_stock(self.selected_module_id)
             draw_text(surface, f"Selected: {defn.name} (${defn.cost}) — Click grid to place",
                      SCREEN_W // 2, 62, NEON_GREEN, 12, center=True)
         elif self.remove_mode:
             draw_text(surface, "SELL MODE — Click a module to sell it",
                      SCREEN_W // 2, 62, NEON_RED, 12, center=True)
         else:
-            draw_text(surface, "Click a module in the shop to select it, then click the grid to place",
+            draw_text(surface, "Click module on grid to MOVE it | Shop to BUY | SELL to remove",
                      SCREEN_W // 2, 62, DIM_CYAN, 11, center=True)
 
         # Grid
@@ -920,7 +974,7 @@ class ShipBuilder:
                         draw_text(surface, f"Sell: +${m.defn.cost // 2}", mx2 + mw // 2, my2 - 12,
                                  NEON_YELLOW, 10, center=True)
 
-        # Placement preview
+        # Placement preview (new module from shop)
         if self.selected_module_id:
             defn = MODULE_DEFS[self.selected_module_id]
             gx = (mx - ox) // cs
@@ -934,6 +988,26 @@ class ShipBuilder:
                 border_color = NEON_GREEN if can else NEON_RED
                 pygame.draw.rect(surface, border_color,
                                (ox + gx * cs, oy + gy * cs, defn.width * cs, defn.height * cs), 2)
+
+        # Moving module preview (drag existing module)
+        if self.moving_module:
+            m = self.moving_module
+            defn = m.defn
+            gx = (mx - ox) // cs
+            gy = (my - oy) // cs
+            if 0 <= gx <= ship.grid_w - defn.width and 0 <= gy <= ship.grid_h - defn.height:
+                can = ship.can_place(defn.id, gx, gy, exclude=m)
+                color = (*NEON_BLUE[:3], 80) if can else (*NEON_RED[:3], 80)
+                preview = pygame.Surface((defn.width * cs, defn.height * cs), pygame.SRCALPHA)
+                preview.fill(color)
+                surface.blit(preview, (ox + gx * cs, oy + gy * cs))
+                border_color = NEON_BLUE if can else NEON_RED
+                pygame.draw.rect(surface, border_color,
+                               (ox + gx * cs, oy + gy * cs, defn.width * cs, defn.height * cs), 2)
+            # Highlight the module's current position
+            cur_rect = pygame.Rect(ox + m.gx * cs + 2, oy + m.gy * cs + 2,
+                                  defn.width * cs - 4, defn.height * cs - 4)
+            pygame.draw.rect(surface, NEON_BLUE, cur_rect, 2)
 
         # Expand buttons
         expand_btns = self._expand_button_rects(ship, ox, oy)

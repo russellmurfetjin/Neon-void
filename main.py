@@ -200,6 +200,10 @@ class Game:
                         self._try_launch_probe()
                     elif event.key == pygame.K_f:
                         self._try_dock_or_interact()
+                    elif event.key == pygame.K_r:
+                        self.ship.refinery_enabled = not self.ship.refinery_enabled
+                        state = "ON" if self.ship.refinery_enabled else "OFF (ore preserved for selling)"
+                        self.hud.notify(f"Refinery: {state}", NEON_GREEN if self.ship.refinery_enabled else NEON_ORANGE, 2.0)
 
             # ── UPDATE ────────────────────────────────────────────
             if self.lobby.active:
@@ -977,7 +981,7 @@ class Game:
                 ]
                 pygame.draw.polygon(self.screen, color, arrow_pts)
                 if d < 500:
-                    draw_text(self.screen, f"[E] Mine fuel ({int(nearest.ore)})",
+                    draw_text(self.screen, f"[E] Mine ore ({int(nearest.ore)})",
                              int(ix + 15), int(iy - 8), color, 10)
 
         # Anomaly research indicator
