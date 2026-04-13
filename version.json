@@ -1,0 +1,18 @@
+{
+    "version": "1.0.0",
+    "build": 1,
+    "files": {
+        "main.py": "https://raw.githubusercontent.com/russellmurfetjin/Neon-void/main/main.py",
+        "requirements.txt": "https://raw.githubusercontent.com/russellmurfetjin/Neon-void/main/requirements.txt",
+        "version.json": "https://raw.githubusercontent.com/russellmurfetjin/Neon-void/main/version.json",
+        "game/__init__.py": "https://raw.githubusercontent.com/russellmurfetjin/Neon-void/main/game/__init__.py",
+        "game/core.py": "https://raw.githubusercontent.com/russellmurfetjin/Neon-void/main/game/core.py",
+        "game/network.py": "https://raw.githubusercontent.com/russellmurfetjin/Neon-void/main/game/network.py",
+        "game/save.py": "https://raw.githubusercontent.com/russellmurfetjin/Neon-void/main/game/save.py",
+        "game/sector.py": "https://raw.githubusercontent.com/russellmurfetjin/Neon-void/main/game/sector.py",
+        "game/ship.py": "https://raw.githubusercontent.com/russellmurfetjin/Neon-void/main/game/ship.py",
+        "game/ui.py": "https://raw.githubusercontent.com/russellmurfetjin/Neon-void/main/game/ui.py",
+        "game/updater.py": "https://raw.githubusercontent.com/russellmurfetjin/Neon-void/main/game/updater.py",
+        "game/world.py": "https://raw.githubusercontent.com/russellmurfetjin/Neon-void/main/game/world.py"
+    }
+}

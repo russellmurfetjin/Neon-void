@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+savegame.json
+update_config.json
+NEON_VOID.zip
