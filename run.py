@@ -9,6 +9,8 @@ if __name__ == "__main__":
         from main import Game
         game = Game()
         game.run()
+    except (KeyboardInterrupt, SystemExit):
+        sys.exit(0)
     except BaseException as e:
         error_text = traceback.format_exc()
 

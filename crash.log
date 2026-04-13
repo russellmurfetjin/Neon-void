@@ -2,21 +2,7 @@ Traceback (most recent call last):
   File "C:\Users\russe\OneDrive\Coding\acturrly high quality games\triple a again\main.py", line 1032, in <module>
     game.run()
     ~~~~~~~~^^
-  File "C:\Users\russe\OneDrive\Coding\acturrly high quality games\triple a again\main.py", line 352, in run
-    self._draw_gameplay(dt)
-    ~~~~~~~~~~~~~~~~~~~^^^^
-  File "C:\Users\russe\OneDrive\Coding\acturrly high quality games\triple a again\main.py", line 923, in _draw_gameplay
-    self.world.draw(self.screen, self.camera, self.time)
-    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\russe\OneDrive\Coding\acturrly high quality games\triple a again\game\world.py", line 1471, in draw
-    a.draw(surface, camera, time)
-    ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\russe\OneDrive\Coding\acturrly high quality games\triple a again\game\world.py", line 69, in draw
-    draw_bar(surface, int(sx - 15), int(sy - self.radius - 12),
-    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-            30, 4, fuel_ratio, indicator_color, (20, 15, 10), (60, 50, 30))
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\russe\OneDrive\Coding\acturrly high quality games\triple a again\game\core.py", line 443, in draw_bar
-    pygame.draw.rect(surface, color, (x, y, int(w * ratio), h))
-    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-ValueError: invalid color (color sequence must have size 3 or 4, and each element must be an integer in the range [0, 255])
+  File "C:\Users\russe\OneDrive\Coding\acturrly high quality games\triple a again\main.py", line 382, in run
+    sys.exit()
+    ~~~~~~~~^^
+SystemExit

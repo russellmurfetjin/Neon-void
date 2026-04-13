@@ -80,6 +80,7 @@ class RemotePlayer:
         self.shield = 0.0
         self.max_shield = 0.0
         self.alive = True
+        self.respawn_timer = 0.0  # counts down to respawn
         self.color = (0, 255, 255)
         self.input_keys = {'w': False, 's': False, 'a': False, 'd': False, 'shift': False}
         self.input_mouse_wx = 0.0
@@ -99,7 +100,8 @@ class RemotePlayer:
             'angle': round(self.angle, 2),
             'hp': round(self.hp, 1), 'max_hp': round(self.max_hp, 1),
             'shield': round(self.shield, 1), 'max_shield': round(self.max_shield, 1),
-            'alive': self.alive, 'color': self.color,
+            'alive': self.alive, 'respawn': round(self.respawn_timer, 1),
+            'color': self.color,
         }
 
 
@@ -288,8 +290,12 @@ class GameServer:
         if self.host_ship_data:
             players['0'] = self.host_ship_data
         feed = [(text, color) for text, color, t in self.kill_feed[-5:]]
-        # Keep snapshot small — only send scores/feed occasionally
         snapshot = {'type': 'state', 'players': players}
+        # Include beams for visual sync
+        if self.beams_snapshot:
+            snapshot['beams'] = self.beams_snapshot[:10]  # cap to 10
+        if self.projectiles_snapshot:
+            snapshot['projectiles'] = self.projectiles_snapshot[:30]  # cap to 30
         if feed:
             snapshot['kill_feed'] = feed
         if self.scores:
@@ -308,7 +314,17 @@ class GameServer:
         }
         with self.lock:
             for pid, p in self.remote_players.items():
+                # Handle respawn timer
                 if not p.alive:
+                    p.respawn_timer -= dt
+                    if p.respawn_timer <= 0:
+                        p.alive = True
+                        p.hp = p.max_hp
+                        p.x = host_ship.x + random.uniform(-200, 200)
+                        p.y = host_ship.y + random.uniform(-200, 200)
+                        p.vx = 0
+                        p.vy = 0
+                        log.info(f"Player {pid} respawned")
                     continue
                 if p.x == 0 and p.y == 0 and (host_ship.x != 0 or host_ship.y != 0):
                     p.x = host_ship.x + random.uniform(-100, 100)

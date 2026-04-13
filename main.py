@@ -312,6 +312,13 @@ class Game:
                          'color': list(b['color']), 'life': b['life']}
                         for b in self.world._active_beams
                     ]
+                    # Sync projectiles so clients can see bullets
+                    self.server.projectiles_snapshot = [
+                        {'x': round(p.x, 1), 'y': round(p.y, 1),
+                         'vx': round(p.vx, 1), 'vy': round(p.vy, 1),
+                         'type': p.proj_type, 'color': list(p.color)}
+                        for p in self.world.projectiles if p.alive and p.owner in ('player', 'remote_player')
+                    ][:30]
                 if self.is_client and self.client and not self.client.connected:
                     self.hud.notify("Disconnected from host!", NEON_RED, 3.0)
                     self.is_client = False
@@ -544,16 +551,12 @@ class Game:
                         if rp.hp <= 0:
                             rp.alive = False
                             rp.hp = 0
+                            rp.respawn_timer = 3.0  # respawn in 3 seconds
                             self.particles.burst(rp.x, rp.y, 50, 200, 0.8, tuple(rp.color), 4)
                             self.server.add_kill("Host", rp.name, [0, 255, 255])
                             self.server.add_score(0)
                             self.audio.play('explosion_big', 0.5)
                             self.camera.shake(10)
-                            # Respawn after 3 seconds
-                            rp.hp = rp.max_hp
-                            rp.alive = True
-                            rp.x = self.ship.x + random.uniform(-200, 200)
-                            rp.y = self.ship.y + random.uniform(-200, 200)
                         break
 
             # Check beams vs remote players
@@ -575,14 +578,10 @@ class Game:
                             self.particles.burst(rp.x, rp.y, 8, 60, 0.2, tuple(rp.color), 2)
                             if rp.hp <= 0:
                                 rp.alive = False
+                                rp.respawn_timer = 3.0
                                 self.particles.burst(rp.x, rp.y, 50, 200, 0.8, tuple(rp.color), 4)
                                 self.server.add_kill("Host", rp.name, [0, 255, 255])
                                 self.server.add_score(0)
-                                # Respawn
-                                rp.hp = rp.max_hp
-                                rp.alive = True
-                                rp.x = self.ship.x + random.uniform(-200, 200)
-                                rp.y = self.ship.y + random.uniform(-200, 200)
 
         # Remote player projectiles hit the host
         if self.server.friendly_fire and self.ship.alive and self.ship.invuln_timer <= 0:
@@ -913,6 +912,42 @@ class Game:
                 draw_bar(self.screen, int(sx - 18), int(sy - 20), 36, 5,
                         hp / max_hp, color, (20, 20, 30), safe_color(color[0] * 0.5, color[1] * 0.5, color[2] * 0.5))
 
+            # Respawn indicator
+            respawn = pdata.get('respawn', 0)
+            if not pdata.get('alive', True) and respawn > 0:
+                draw_text(self.screen, f"RESPAWN: {respawn:.0f}s", int(sx), int(sy), NEON_RED, 12, center=True)
+
+        # Draw synced projectiles from server (client-side rendering)
+        if self.is_client and self.client:
+            with self.client.lock:
+                remote_projs = list(self.client.remote_projectiles)
+                remote_beams = list(self.client.remote_beams)
+
+            for p in remote_projs:
+                px, py = p.get('x', 0), p.get('y', 0)
+                sx, sy = self.camera.world_to_screen(px, py)
+                if sx < -50 or sx > SCREEN_W + 50 or sy < -50 or sy > SCREEN_H + 50:
+                    continue
+                c = tuple(p.get('color', [255, 255, 0]))
+                ptype = p.get('type', 'bullet')
+                if ptype == 'bullet':
+                    vx, vy = p.get('vx', 0), p.get('vy', 0)
+                    spd = max(1, math.sqrt(vx * vx + vy * vy))
+                    nx, ny = vx / spd * 5, vy / spd * 5
+                    pygame.draw.line(self.screen, c, (int(sx - nx), int(sy - ny)), (int(sx + nx), int(sy + ny)), 2)
+                elif ptype == 'missile':
+                    draw_glow_circle(self.screen, c, (sx, sy), 3, 10, 50)
+
+            for b in remote_beams:
+                sx1, sy1 = self.camera.world_to_screen(b.get('sx', 0), b.get('sy', 0))
+                sx2, sy2 = self.camera.world_to_screen(b.get('ex', 0), b.get('ey', 0))
+                c = tuple(b.get('color', [255, 80, 80]))
+                alpha = max(0, min(1, b.get('life', 0.1) / 0.12))
+                beam_c = safe_color(c[0] * 0.7 * alpha, c[1] * 0.7 * alpha, c[2] * 0.7 * alpha)
+                pygame.draw.line(self.screen, beam_c, (int(sx1), int(sy1)), (int(sx2), int(sy2)), 3)
+                core_c = safe_color((c[0] * 0.5 + 128) * alpha, (c[1] * 0.5 + 128) * alpha, (c[2] * 0.5 + 128) * alpha)
+                pygame.draw.line(self.screen, core_c, (int(sx1), int(sy1)), (int(sx2), int(sy2)), 1)
+
     def _draw_gameplay(self, dt):
         self.screen.fill(BG_DARK)
 
@@ -1030,7 +1065,10 @@ if __name__ == "__main__":
     try:
         game = Game()
         game.run()
-    except BaseException as e:
+    except (KeyboardInterrupt, SystemExit):
+        pygame.quit()
+        sys.exit(0)
+    except Exception as e:
         import traceback
         error_text = traceback.format_exc()
 
