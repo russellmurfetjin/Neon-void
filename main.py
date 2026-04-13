@@ -360,8 +360,14 @@ class Game:
             elif self.is_client and self.client and self.client.connected:
                 draw_text(self.screen, f"CONNECTED as {self.client.my_name}", 15, SCREEN_H - 70,
                          NEON_GREEN, 11)
-                with self.client.lock:
-                    self._draw_mp_hud(self.client.scores, self.client.kill_feed, False)
+                # Copy data to avoid holding lock during draw
+                try:
+                    with self.client.lock:
+                        scores = dict(self.client.scores)
+                        feed = list(self.client.kill_feed)
+                    self._draw_mp_hud(scores, feed, False)
+                except Exception:
+                    pass
 
             pygame.display.flip()
 

@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Tuple
 
 DEFAULT_PORT = 7777
 BEACON_PORT = 7778
-TICK_RATE = 20
+TICK_RATE = 10  # state updates per second (lower = more stable on slow networks)
 BUFFER_SIZE = 65536
 
 # Set up logging
@@ -245,16 +245,27 @@ class GameServer:
 
     def _client_send(self, pid, conn):
         """Send state updates to a client at tick rate (separate thread)."""
+        send_failures = 0
         while self.running and pid in self.clients:
             try:
                 with self.lock:
                     snapshot = self._build_snapshot()
                 if not send_msg(conn, snapshot):
-                    log.info(f"Send failed for player {pid}")
-                    break
+                    send_failures += 1
+                    log.info(f"Send failed for player {pid} ({send_failures}/5)")
+                    if send_failures >= 5:
+                        log.info(f"Too many send failures for player {pid}, disconnecting")
+                        break
+                    time.sleep(0.5)  # back off on failure
+                    continue
+                send_failures = 0  # reset on success
             except Exception as e:
+                send_failures += 1
                 log.debug(f"Send error for player {pid}: {e}")
-                break
+                if send_failures >= 5:
+                    break
+                time.sleep(0.5)
+                continue
             time.sleep(1.0 / TICK_RATE)
 
         log.info(f"Player {pid} send loop ended")
@@ -276,14 +287,13 @@ class GameServer:
         if self.host_ship_data:
             players['0'] = self.host_ship_data
         feed = [(text, color) for text, color, t in self.kill_feed[-5:]]
-        return {
-            'type': 'state', 'players': players,
-            'beams': self.beams_snapshot, 'projectiles': self.projectiles_snapshot,
-            'scores': {str(k): v for k, v in self.scores.items()},
-            'kill_feed': feed,
-            'settings': {'friendly_fire': self.friendly_fire,
-                         'auto_shoot_players': self.auto_shoot_players},
-        }
+        # Keep snapshot small — only send scores/feed occasionally
+        snapshot = {'type': 'state', 'players': players}
+        if feed:
+            snapshot['kill_feed'] = feed
+        if self.scores:
+            snapshot['scores'] = {str(k): v for k, v in self.scores.items()}
+        return snapshot
 
     def update_players(self, dt, host_ship):
         self.host_ship_data = {
