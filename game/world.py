@@ -52,11 +52,12 @@ class Asteroid:
         if self.depleted:
             return  # don't draw destroyed asteroids
         sx, sy = camera.world_to_screen(self.x, self.y)
+        z = camera.zoom
         pts = []
         for angle, r in self.points:
             a = angle + self.rotation
-            px = sx + math.cos(a) * r
-            py = sy + math.sin(a) * r
+            px = sx + math.cos(a) * r * z
+            py = sy + math.sin(a) * r * z
             pts.append((px, py))
         if len(pts) >= 3:
             pygame.draw.polygon(surface, self.color, pts)
@@ -157,13 +158,15 @@ class MiningProbe:
 
     def draw(self, surface, camera, time):
         sx, sy = camera.world_to_screen(self.x, self.y)
+        z = camera.zoom
         glow = 0.5 + 0.5 * math.sin(time * 8)
         color = NEON_GREEN if self.state != 'mining' else NEON_ORANGE
-        draw_glow_circle(surface, color, (sx, sy), 4, 12, int(40 + 30 * glow))
+        draw_glow_circle(surface, color, (sx, sy), max(2, int(4 * z)), max(4, int(12 * z)), int(40 + 30 * glow))
 
         if self.cargo > 0:
             ratio = self.cargo / self.max_cargo
-            draw_bar(surface, int(sx - 8), int(sy - 10), 16, 3, ratio, ORE_COLOR, (20, 15, 10))
+            w = max(8, int(16 * z))
+            draw_bar(surface, int(sx - w // 2), int(sy - 10 * z), w, max(2, int(3 * z)), ratio, ORE_COLOR, (20, 15, 10))
 
         if self.state == 'mining':
             tsx, tsy = camera.world_to_screen(self.target.x, self.target.y)
@@ -227,24 +230,25 @@ class Projectile:
 
     def draw(self, surface, camera):
         sx, sy = camera.world_to_screen(self.x, self.y)
+        z = camera.zoom
         if self.proj_type == 'bullet':
             speed = math.sqrt(self.vx ** 2 + self.vy ** 2)
             if speed > 0:
-                nx, ny = self.vx / speed * 5, self.vy / speed * 5
+                nx, ny = self.vx / speed * 5 * z, self.vy / speed * 5 * z
                 pygame.draw.line(surface, self.color,
                                (int(sx - nx), int(sy - ny)),
-                               (int(sx + nx), int(sy + ny)), 2)
-            pygame.draw.circle(surface, self.color, (int(sx), int(sy)), 2)
+                               (int(sx + nx), int(sy + ny)), max(1, int(2 * z)))
+            pygame.draw.circle(surface, self.color, (int(sx), int(sy)), max(1, int(2 * z)))
         elif self.proj_type == 'laser':
             speed = math.sqrt(self.vx ** 2 + self.vy ** 2)
             if speed > 0:
-                nx, ny = self.vx / speed * 8, self.vy / speed * 8
+                nx, ny = self.vx / speed * 8 * z, self.vy / speed * 8 * z
                 pygame.draw.line(surface, self.color,
                                (int(sx - nx), int(sy - ny)),
-                               (int(sx + nx), int(sy + ny)), 2)
-            draw_glow_circle(surface, self.color, (sx, sy), 2, 8, 50)
+                               (int(sx + nx), int(sy + ny)), max(1, int(2 * z)))
+            draw_glow_circle(surface, self.color, (sx, sy), max(1, int(2 * z)), max(3, int(8 * z)), 50)
         elif self.proj_type == 'missile':
-            draw_glow_circle(surface, self.color, (sx, sy), 3, 12, 60)
+            draw_glow_circle(surface, self.color, (sx, sy), max(2, int(3 * z)), max(4, int(12 * z)), 60)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -478,7 +482,7 @@ class Enemy:
 
         cos_a = math.cos(self.angle)
         sin_a = math.sin(self.angle)
-        r = self.radius
+        r = self.radius * camera.zoom
 
         if self.is_boss or self.enemy_type == 'miniboss':
             pts = [
@@ -619,8 +623,9 @@ class Pickup:
             symbol = "+"
 
         alpha = min(1.0, self.life / 3.0)
-        draw_glow_circle(surface, color, (sx, sy + bob), 6, 16, int(50 * alpha))
-        draw_text(surface, symbol, int(sx), int(sy + bob), color, 10, center=True)
+        z = camera.zoom
+        draw_glow_circle(surface, color, (sx, sy + bob), max(3, int(6 * z)), max(8, int(16 * z)), int(50 * alpha))
+        draw_text(surface, symbol, int(sx), int(sy + bob), color, max(8, int(10 * z)), center=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1029,7 +1034,7 @@ class World:
         for m in ship.gun_modules:
             if m.cooldown > 0:
                 continue
-            m.cooldown = 1.0 / m.defn.fire_rate
+            m.cooldown = 1.0 / m.fire_rate
 
             # Twin guns fire two bullets with slight spread
             shots = 2 if 'twin' in m.defn.id else 1
@@ -1043,7 +1048,7 @@ class World:
                     ship.y + math.sin(a) * 20,
                     math.cos(a) * LASER_SPEED * 0.9,
                     math.sin(a) * LASER_SPEED * 0.9,
-                    m.defn.damage, 'player', 'bullet',
+                    m.damage, 'player', 'bullet',
                     color=NEON_YELLOW
                 )
                 self.projectiles.append(proj)
@@ -1068,13 +1073,13 @@ class World:
         for m in ship.laser_modules:
             if m.cooldown > 0:
                 continue
-            m.cooldown = 1.0 / m.defn.fire_rate
+            m.cooldown = 1.0 / m.fire_rate
             fired = True
 
         if not fired:
             return False
 
-        total_damage = sum(m.defn.damage for m in ship.laser_modules if m.cooldown > 0.001)
+        total_damage = sum(m.damage for m in ship.laser_modules if m.cooldown > 0.001)
         if total_damage <= 0:
             return False
 
@@ -1187,14 +1192,14 @@ class World:
         for m in ship.missile_modules:
             if m.cooldown > 0:
                 continue
-            m.cooldown = 1.0 / m.defn.fire_rate
+            m.cooldown = 1.0 / m.fire_rate
 
             proj = Projectile(
                 ship.x + math.cos(aim_angle) * 20,
                 ship.y + math.sin(aim_angle) * 20,
                 math.cos(aim_angle) * MISSILE_SPEED,
                 math.sin(aim_angle) * MISSILE_SPEED,
-                m.defn.damage, 'player', 'missile',
+                m.damage, 'player', 'missile',
                 target=best_enemy, color=NEON_PURPLE
             )
             self.projectiles.append(proj)
@@ -1230,7 +1235,7 @@ class World:
             if not best_enemy:
                 continue
 
-            m.cooldown = 1.0 / m.defn.fire_rate
+            m.cooldown = 1.0 / m.fire_rate
             aim = angle_to(ship.x, ship.y, best_enemy.x, best_enemy.y)
             spread = random.uniform(-0.05, 0.05)
 
@@ -1239,7 +1244,7 @@ class World:
                 ship.y + math.sin(aim) * 15,
                 math.cos(aim + spread) * LASER_SPEED * 0.8,
                 math.sin(aim + spread) * LASER_SPEED * 0.8,
-                m.defn.damage, 'player', 'bullet',
+                m.damage, 'player', 'bullet',
                 color=NEON_GREEN
             )
             self.projectiles.append(proj)
@@ -1270,7 +1275,7 @@ class World:
             if not best_enemy:
                 continue
 
-            m.cooldown = 1.0 / m.defn.fire_rate
+            m.cooldown = 1.0 / m.fire_rate
             aim = angle_to(ship.x, ship.y, best_enemy.x, best_enemy.y)
 
             # Short beam (half the range of manual laser)
@@ -1289,7 +1294,7 @@ class World:
             })
 
             # Damage the targeted enemy directly
-            best_enemy.take_hit(m.defn.damage, particles)
+            best_enemy.take_hit(m.damage, particles)
             audio.play('hit', 0.1)
             if not best_enemy.alive:
                 self.pickups.append(Pickup(best_enemy.x, best_enemy.y, 'credits', best_enemy.credit_value))
@@ -1396,7 +1401,7 @@ class World:
 
         # Collision: enemy projectiles vs player
         if ship.alive and ship.invuln_timer <= 0:
-            ship_r = max(ship.grid_w, ship.grid_h) * 5
+            ship_r = max(ship.grid_w, ship.grid_h) * 8
             for p in self.projectiles:
                 if p.owner != 'enemy' or not p.alive:
                     continue

@@ -144,15 +144,49 @@ class PlacedModule:
         self.defn = defn
         self.gx = gx
         self.gy = gy
+        self.level = 1  # 1-5, upgraded at stations
         self.hp = defn.hp
         self.max_hp = defn.hp
-        self.cooldown = 0.0  # weapon cooldown
+        self.cooldown = 0.0
         self.active = True
-        self.anim_time = 0.0  # for visual effects
+        self.anim_time = 0.0
 
     @property
     def id(self):
         return self.defn.id
+
+    @property
+    def mult(self):
+        """Stat multiplier based on level. Lvl1=1.0, Lvl2=1.3, Lvl5=2.2"""
+        return 1.0 + 0.3 * (self.level - 1)
+
+    @property
+    def thrust(self): return self.defn.thrust * self.mult
+    @property
+    def fuel_capacity(self): return self.defn.fuel_capacity * self.mult
+    @property
+    def ore_capacity(self): return self.defn.ore_capacity * self.mult
+    @property
+    def refinery_rate(self): return self.defn.refinery_rate * self.mult
+    @property
+    def damage(self): return self.defn.damage * self.mult
+    @property
+    def fire_rate(self): return self.defn.fire_rate * (1.0 + 0.15 * (self.level - 1))
+    @property
+    def shield_hp(self): return self.defn.shield_hp * self.mult
+    @property
+    def shield_regen(self): return self.defn.shield_regen * self.mult
+    @property
+    def armor(self): return self.defn.armor * self.mult
+    @property
+    def hull_regen(self): return self.defn.hull_regen * self.mult
+    @property
+    def probe_count(self): return self.defn.probe_count + (self.level - 1)  # +1 probe per level
+
+    def upgrade_cost(self):
+        if self.level >= 5:
+            return 0
+        return int(self.defn.cost * (0.7 + 0.3 * self.level))
 
     def cells(self):
         for dx in range(self.defn.width):
@@ -206,6 +240,7 @@ class Ship:
         self.distress_charging = False
         self.distress_timer = 0.0
         self.distress_cooldown = 0.0
+        self.skin = 'default'  # 'default', 'arrowhead', 'battleship', 'stealth', 'raptor'
 
         # Place default modules
         self._place_defaults()
@@ -273,6 +308,46 @@ class Ship:
         self._recalc_stats()
         return True
 
+    def can_shrink(self, direction: str) -> bool:
+        """Check if a row/column can be removed (no modules in it, grid > 3x3)."""
+        if self.grid_w <= 3 or self.grid_h <= 3:
+            if direction in ('left', 'right') and self.grid_w <= 3:
+                return False
+            if direction in ('up', 'down') and self.grid_h <= 3:
+                return False
+        for m in self.modules:
+            for cx, cy in m.cells():
+                if direction == 'right' and cx == self.grid_w - 1:
+                    return False
+                if direction == 'left' and cx == 0:
+                    return False
+                if direction == 'down' and cy == self.grid_h - 1:
+                    return False
+                if direction == 'up' and cy == 0:
+                    return False
+        return True
+
+    def shrink_grid(self, direction: str) -> bool:
+        """Remove a row/column. Returns True if successful."""
+        if not self.can_shrink(direction):
+            return False
+        # Refund half the expand cost
+        self.credits += EXPAND_COST // 2
+        if direction == 'right':
+            self.grid_w -= 1
+        elif direction == 'left':
+            self.grid_w -= 1
+            for m in self.modules:
+                m.gx -= 1
+        elif direction == 'down':
+            self.grid_h -= 1
+        elif direction == 'up':
+            self.grid_h -= 1
+            for m in self.modules:
+                m.gy -= 1
+        self._recalc_stats()
+        return True
+
     def _recalc_stats(self):
         self.max_shield = 0
         self.shield_regen = 0
@@ -280,35 +355,34 @@ class Ship:
         for m in self.modules:
             if not m.active:
                 continue
-            d = m.defn
-            self.max_shield += d.shield_hp
-            self.shield_regen += d.shield_regen
-            self.max_probes += d.probe_count
+            self.max_shield += m.shield_hp
+            self.shield_regen += m.shield_regen
+            self.max_probes += m.probe_count
         self.shield = min(self.shield, self.max_shield)
 
     @property
     def total_thrust(self):
-        return PLAYER_THRUST + sum(m.defn.thrust for m in self.modules if m.active)
+        return PLAYER_THRUST + sum(m.thrust for m in self.modules if m.active)
 
     @property
     def fuel_capacity(self):
-        return sum(m.defn.fuel_capacity for m in self.modules if m.active)
+        return sum(m.fuel_capacity for m in self.modules if m.active)
 
     @property
     def ore_capacity(self):
-        return sum(m.defn.ore_capacity for m in self.modules if m.active)
+        return sum(m.ore_capacity for m in self.modules if m.active)
 
     @property
     def refinery_rate(self):
-        return sum(m.defn.refinery_rate for m in self.modules if m.active)
+        return sum(m.refinery_rate for m in self.modules if m.active)
 
     @property
     def total_armor(self):
-        return sum(m.defn.armor for m in self.modules if m.active)
+        return sum(m.armor for m in self.modules if m.active)
 
     @property
     def total_hull_regen(self):
-        return sum(m.defn.hull_regen for m in self.modules if m.active)
+        return sum(m.hull_regen for m in self.modules if m.active)
 
     @property
     def core_hp(self):
@@ -466,25 +540,76 @@ class Ship:
 
     def draw(self, surface, camera, time):
         sx, sy = camera.world_to_screen(self.x, self.y)
-
-        # Draw ship body as a rotated polygon based on grid size
-        ship_size = max(self.grid_w, self.grid_h) * 4
+        ship_size = max(self.grid_w, self.grid_h) * 2.5 * camera.zoom
         cos_a = math.cos(self.angle)
         sin_a = math.sin(self.angle)
+        outline = NEON_CYAN if self.invuln_timer > 0 else DIM_CYAN
 
-        # Main hull shape
-        hull_points = [
-            (sx + cos_a * ship_size * 2 - sin_a * 0,
-             sy + sin_a * ship_size * 2 + cos_a * 0),  # nose
-            (sx + cos_a * (-ship_size) - sin_a * (-ship_size * 1.2),
-             sy + sin_a * (-ship_size) + cos_a * (-ship_size * 1.2)),  # left wing
-            (sx + cos_a * (-ship_size * 0.5) - sin_a * 0,
-             sy + sin_a * (-ship_size * 0.5) + cos_a * 0),  # back center
-            (sx + cos_a * (-ship_size) - sin_a * (ship_size * 1.2),
-             sy + sin_a * (-ship_size) + cos_a * (ship_size * 1.2)),  # right wing
-        ]
-        pygame.draw.polygon(surface, HULL_COLOR, hull_points)
-        pygame.draw.polygon(surface, NEON_CYAN if self.invuln_timer > 0 else DIM_CYAN, hull_points, 2)
+        # Helper to rotate/offset a point
+        def pt(fx, fy):
+            return (sx + cos_a * fx - sin_a * fy,
+                    sy + sin_a * fx + cos_a * fy)
+
+        s = ship_size
+        skin = getattr(self, 'skin', 'default')
+
+        if skin == 'battleship':
+            # Big rectangular hull with protruding gun turrets
+            hull = [pt(s * 2.2, s * 0.5), pt(s * 2.2, -s * 0.5),
+                    pt(-s * 1.5, -s * 1.1), pt(-s * 1.8, 0), pt(-s * 1.5, s * 1.1)]
+            pygame.draw.polygon(surface, (40, 50, 60), hull)
+            pygame.draw.polygon(surface, outline, hull, 2)
+            # Turret bumps
+            for tx, ty in [(s * 0.8, -s * 0.5), (s * 0.8, s * 0.5), (-s * 0.3, 0)]:
+                tp = pt(tx, ty)
+                pygame.draw.circle(surface, (60, 70, 80), (int(tp[0]), int(tp[1])), 4)
+                pygame.draw.circle(surface, outline, (int(tp[0]), int(tp[1])), 4, 1)
+            # Bridge
+            bridge = [pt(s * 0.3, s * 0.3), pt(-s * 0.5, s * 0.3),
+                     pt(-s * 0.5, -s * 0.3), pt(s * 0.3, -s * 0.3)]
+            pygame.draw.polygon(surface, (80, 100, 120), bridge)
+
+        elif skin == 'arrowhead':
+            # Sharp arrow/dart
+            hull = [pt(s * 2.5, 0), pt(-s * 1.2, -s * 1.3),
+                    pt(-s * 0.8, 0), pt(-s * 1.2, s * 1.3)]
+            pygame.draw.polygon(surface, (30, 30, 50), hull)
+            pygame.draw.polygon(surface, outline, hull, 2)
+            # Center stripe
+            stripe = [pt(s * 2.3, 0), pt(-s * 0.8, 0)]
+            pygame.draw.line(surface, NEON_CYAN, stripe[0], stripe[1], 2)
+
+        elif skin == 'stealth':
+            # Angular black stealth fighter
+            hull = [pt(s * 2.0, 0), pt(s * 0.8, -s * 0.4),
+                   pt(-s * 0.5, -s * 1.5), pt(-s * 1.2, -s * 1.0),
+                   pt(-s * 1.2, s * 1.0), pt(-s * 0.5, s * 1.5),
+                   pt(s * 0.8, s * 0.4)]
+            pygame.draw.polygon(surface, (15, 15, 25), hull)
+            pygame.draw.polygon(surface, NEON_PURPLE, hull, 2)
+
+        elif skin == 'raptor':
+            # Bird-like fighter with swept wings
+            hull = [pt(s * 2.3, 0), pt(s * 0.8, -s * 0.3),
+                   pt(s * 0.2, -s * 1.5), pt(-s * 0.8, -s * 1.2),
+                   pt(-s * 1.3, -s * 0.3), pt(-s * 1.0, 0),
+                   pt(-s * 1.3, s * 0.3), pt(-s * 0.8, s * 1.2),
+                   pt(s * 0.2, s * 1.5), pt(s * 0.8, s * 0.3)]
+            pygame.draw.polygon(surface, (50, 30, 30), hull)
+            pygame.draw.polygon(surface, NEON_RED, hull, 2)
+            # Cockpit
+            cp = pt(s * 1.2, 0)
+            pygame.draw.circle(surface, NEON_YELLOW, (int(cp[0]), int(cp[1])), 3)
+
+        else:  # 'default' asteroid-like
+            hull_points = [
+                pt(s * 2, 0),
+                pt(-s, -s * 1.2),
+                pt(-s * 0.5, 0),
+                pt(-s, s * 1.2),
+            ]
+            pygame.draw.polygon(surface, HULL_COLOR, hull_points)
+            pygame.draw.polygon(surface, outline, hull_points, 2)
 
         # Engine glow
         speed = math.sqrt(self.vx ** 2 + self.vy ** 2)

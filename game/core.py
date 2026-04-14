@@ -98,6 +98,8 @@ class Camera:
         self.shake_intensity = 0.0
         self.shake_decay = 5.0
         self.smooth = 5.0
+        self.zoom = 1.0  # 1.0 = normal, 0.5 = zoomed out 2x
+        self.target_zoom = 1.0
 
     def follow(self, x: float, y: float):
         self.target_x = x
@@ -109,6 +111,7 @@ class Camera:
     def update(self, dt: float):
         self.x += (self.target_x - self.x) * self.smooth * dt
         self.y += (self.target_y - self.y) * self.smooth * dt
+        self.zoom += (self.target_zoom - self.zoom) * 8 * dt
         if self.shake_intensity > 0.1:
             self.shake_x = random.uniform(-1, 1) * self.shake_intensity
             self.shake_y = random.uniform(-1, 1) * self.shake_intensity
@@ -119,22 +122,24 @@ class Camera:
             self.shake_intensity = 0
 
     def world_to_screen(self, wx: float, wy: float) -> Tuple[float, float]:
-        sx = wx - self.x + SCREEN_W / 2 + self.shake_x
-        sy = wy - self.y + SCREEN_H / 2 + self.shake_y
+        sx = (wx - self.x) * self.zoom + SCREEN_W / 2 + self.shake_x
+        sy = (wy - self.y) * self.zoom + SCREEN_H / 2 + self.shake_y
         return sx, sy
 
     def screen_to_world(self, sx: float, sy: float) -> Tuple[float, float]:
-        wx = sx + self.x - SCREEN_W / 2 - self.shake_x
-        wy = sy + self.y - SCREEN_H / 2 - self.shake_y
+        wx = (sx - SCREEN_W / 2 - self.shake_x) / self.zoom + self.x
+        wy = (sy - SCREEN_H / 2 - self.shake_y) / self.zoom + self.y
         return wx, wy
 
     def visible_rect(self) -> pygame.Rect:
         margin = 100
+        w = SCREEN_W / self.zoom
+        h = SCREEN_H / self.zoom
         return pygame.Rect(
-            self.x - SCREEN_W / 2 - margin,
-            self.y - SCREEN_H / 2 - margin,
-            SCREEN_W + margin * 2,
-            SCREEN_H + margin * 2,
+            self.x - w / 2 - margin,
+            self.y - h / 2 - margin,
+            w + margin * 2,
+            h + margin * 2,
         )
 
 
@@ -413,8 +418,17 @@ def clamp(val, lo, hi):
     return max(lo, min(hi, val))
 
 
+_FONT_CACHE = {}
+
+def get_font(size, font_name=None):
+    key = (font_name or "consolas", size)
+    if key not in _FONT_CACHE:
+        _FONT_CACHE[key] = pygame.font.SysFont(key[0], key[1])
+    return _FONT_CACHE[key]
+
+
 def draw_text(surface, text, x, y, color=WHITE, size=16, center=False, font_name=None):
-    font = pygame.font.SysFont(font_name or "consolas", size)
+    font = get_font(size, font_name)
     rendered = font.render(str(text), True, color)
     if center:
         rect = rendered.get_rect(center=(x, y))

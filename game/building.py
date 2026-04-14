@@ -60,6 +60,7 @@ class Building:
         # Chest storage
         self.stored_credits = 0
         self.stored_ore = 0.0
+        self.stored_modules = []  # list of (module_id, level)
         # Turret state
         self.fire_cooldown = 0.0
         # Beacon label
@@ -78,7 +79,7 @@ class Building:
         if sx < -100 or sx > SCREEN_W + 100 or sy < -100 or sy > SCREEN_H + 100:
             return
 
-        r = self.defn.radius
+        r = self.defn.radius * camera.zoom
         bid = self.defn.id
 
         if bid == 'barricade':
@@ -174,6 +175,7 @@ class Building:
             'x': round(self.x, 1), 'y': round(self.y, 1),
             'bid': self.defn.id, 'hp': self.hp,
             'credits': self.stored_credits, 'ore': round(self.stored_ore, 1),
+            'modules': self.stored_modules,
             'label': self.label,
         }
 
@@ -183,5 +185,6 @@ class Building:
         b.hp = d.get('hp', b.max_hp)
         b.stored_credits = d.get('credits', 0)
         b.stored_ore = d.get('ore', 0)
+        b.stored_modules = d.get('modules', [])
         b.label = d.get('label', '')
         return b

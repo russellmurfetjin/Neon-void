@@ -86,9 +86,10 @@ class Station:
 
     def draw(self, surface, camera, time):
         sx, sy = camera.world_to_screen(self.x, self.y)
+        z = camera.zoom
 
         # Outer ring
-        ring_r = 50 + math.sin(self.ring_anim * 0.5) * 3
+        ring_r = (50 + math.sin(self.ring_anim * 0.5) * 3) * z
         ring_alpha = int(40 + 20 * math.sin(time * 2))
         ring_surf = pygame.Surface((int(ring_r * 2 + 4), int(ring_r * 2 + 4)), pygame.SRCALPHA)
         pygame.draw.circle(ring_surf, (*NEON_CYAN[:3], ring_alpha),
@@ -97,7 +98,7 @@ class Station:
                     special_flags=pygame.BLEND_ADD)
 
         # Station body (hexagonal)
-        r = 28
+        r = 28 * z
         pts = []
         for i in range(6):
             angle = self.rotation + i * math.pi / 3
@@ -106,7 +107,7 @@ class Station:
         pygame.draw.polygon(surface, NEON_CYAN, pts, 2)
 
         # Inner structure
-        r2 = 14
+        r2 = 14 * z
         pts2 = []
         for i in range(6):
             angle = -self.rotation * 1.5 + i * math.pi / 3

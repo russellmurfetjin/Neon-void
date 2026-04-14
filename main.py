@@ -38,7 +38,7 @@ logging.basicConfig(
 log = logging.getLogger("neonvoid")
 from game.ship import Ship
 from game.world import World
-from game.ui import HUD, StationUI, SectorMap, PauseMenu, MainMenu, GameOverScreen, LobbyUI
+from game.ui import HUD, StationUI, SectorMap, PauseMenu, MainMenu, GameOverScreen, LobbyUI, ChestUI
 from game.save import save_game, load_game, has_save
 from game.network import GameServer, GameClient, get_local_ip
 from game.updater import AsyncUpdater, get_local_version, get_update_url
@@ -64,6 +64,7 @@ class Game:
         self.sector_map = SectorMap()
         self.pause_menu = PauseMenu()
         self.lobby = LobbyUI()
+        self.chest_ui = ChestUI()
 
         # Multiplayer
         self.server: Optional[GameServer] = None
@@ -191,7 +192,9 @@ class Game:
 
                 # ESC handling — open pause menu
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                    if self.station_ui.active:
+                    if self.chest_ui.active:
+                        self.chest_ui.close()
+                    elif self.station_ui.active:
                         self._undock()
                     elif self.sector_map.active:
                         self.sector_map.active = False
@@ -211,6 +214,13 @@ class Game:
                         self._undock()
                     continue
 
+                # Chest UI
+                if self.chest_ui.active:
+                    result = self.chest_ui.handle_event(event, self.ship, self.audio)
+                    if result == 'close':
+                        self.chest_ui.close()
+                    continue
+
                 # Gameplay events
                 if event.type == pygame.KEYDOWN:
                     if event.key in (pygame.K_TAB, pygame.K_m):
@@ -227,6 +237,11 @@ class Game:
                         self.build_mode = not self.build_mode
                         if self.build_mode:
                             self.hud.notify("BUILD MODE — Scroll to select, LMB to place, B to exit", NEON_PURPLE, 3.0)
+                    elif event.key == pygame.K_k:
+                        skins = ['default', 'arrowhead', 'battleship', 'stealth', 'raptor']
+                        idx = skins.index(self.ship.skin) if self.ship.skin in skins else 0
+                        self.ship.skin = skins[(idx + 1) % len(skins)]
+                        self.hud.notify(f"Skin: {self.ship.skin.upper()}", NEON_CYAN, 1.5)
 
                 # Build mode events
                 if self.build_mode and not self.ship.docked:
@@ -236,6 +251,10 @@ class Game:
                         mx2, my2 = pygame.mouse.get_pos()
                         wmx2, wmy2 = self.camera.screen_to_world(mx2, my2)
                         self._try_place_building(wmx2, wmy2)
+                # Zoom with scroll wheel (when not in build mode or station)
+                elif (event.type == pygame.MOUSEWHEEL and
+                      not self.station_ui.active and not self.sector_map.active):
+                    self.camera.target_zoom = clamp(self.camera.target_zoom + event.y * 0.1, 0.3, 2.0)
 
             # ── UPDATE ────────────────────────────────────────────
             if self.lobby.active:
@@ -476,7 +495,9 @@ class Game:
             self._draw_gameplay(dt)
 
             # Overlays
-            if self.station_ui.active:
+            if self.chest_ui.active:
+                self.chest_ui.draw(self.screen, self.ship, self.time)
+            elif self.station_ui.active:
                 self.station_ui.draw(self.screen, self.ship, self.time)
             elif self.sector_map.active:
                 self.sector_map.draw(self.screen, self.world.sectors, self.ship, self.time,
@@ -706,7 +727,7 @@ class Game:
 
         # Remote player projectiles hit the host
         if self.server.friendly_fire and self.ship.alive and self.ship.invuln_timer <= 0:
-            ship_r = max(self.ship.grid_w, self.ship.grid_h) * 5
+            ship_r = max(self.ship.grid_w, self.ship.grid_h) * 8
             for p in self.world.projectiles:
                 if p.owner != 'remote_player' or not p.alive:
                     continue
@@ -838,7 +859,7 @@ class Game:
                     if ab_sq2 > 0:
                         t2 = max(0, min(1, (apx2 * abx2 + apy2 * aby2) / ab_sq2))
                         d2 = dist(self.ship.x, self.ship.y, sx + t2 * abx2, sy + t2 * aby2)
-                        ship_r = max(self.ship.grid_w, self.ship.grid_h) * 5
+                        ship_r = max(self.ship.grid_w, self.ship.grid_h) * 8
                         if d2 < ship_r:
                             self.ship.take_damage(8)
                             self.particles.burst(self.ship.x, self.ship.y, 10, 80, 0.3, NEON_RED, 2)
@@ -924,29 +945,7 @@ class Game:
                 continue
             d = dist(self.ship.x, self.ship.y, b.x, b.y)
             if d < 60:
-                # Toggle: deposit if holding resources, withdraw if chest has stuff
-                if self.ship.ore > 0:
-                    b.stored_ore += self.ship.ore
-                    self.hud.notify(f"Deposited {int(self.ship.ore)} ore", ORE_COLOR, 1.5)
-                    self.ship.ore = 0
-                elif self.ship.credits > 50:
-                    deposit = self.ship.credits // 2
-                    b.stored_credits += deposit
-                    self.ship.credits -= deposit
-                    self.hud.notify(f"Deposited ${deposit}", NEON_YELLOW, 1.5)
-                elif b.stored_credits > 0 or b.stored_ore > 0:
-                    self.ship.credits += b.stored_credits
-                    ore_space = self.ship.ore_capacity - self.ship.ore
-                    taken_ore = min(b.stored_ore, ore_space)
-                    self.ship.ore += taken_ore
-                    msg = f"Withdrew ${b.stored_credits}"
-                    if taken_ore > 0:
-                        msg += f" + {int(taken_ore)} ore"
-                    b.stored_credits = 0
-                    b.stored_ore -= taken_ore
-                    self.hud.notify(msg, NEON_YELLOW, 1.5)
-                else:
-                    self.hud.notify("Chest is empty. Carry ore or credits to deposit.", DIM_CYAN, 1.5)
+                self.chest_ui.open(b)
                 self.audio.play('pickup', 0.4)
                 return True
         return False

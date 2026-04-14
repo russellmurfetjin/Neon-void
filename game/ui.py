@@ -844,12 +844,14 @@ class ShipBuilder:
         self.shop_items = [mid for mid in MODULE_DEFS.keys() if mid != 'core']
         self.tooltip_module: Optional[str] = None
         self.remove_mode = False
-        self.station_ref: Optional[Station] = None  # set when opened from station
+        self.upgrade_mode = False
+        self.station_ref: Optional[Station] = None
 
     def toggle(self):
         self.active = not self.active
         self.selected_module_id = None
         self.remove_mode = False
+        self.upgrade_mode = False
 
     def _get_stock(self, mid: str) -> int:
         if self.station_ref and hasattr(self.station_ref, 'stock'):
@@ -908,11 +910,25 @@ class ShipBuilder:
                     elif self.remove_mode:
                         m = ship.cell_occupied(gx, gy)
                         if m and m.defn.id != 'core':
-                            refund = m.defn.cost // 2
+                            refund = m.defn.cost // 2 + (m.level - 1) * 30
                             self._add_stock(m.defn.id)
                             ship.remove_module(m)
                             ship.credits += refund
                             audio.play('pickup', 0.4)
+                        return True
+                    # Upgrade mode
+                    elif self.upgrade_mode:
+                        m = ship.cell_occupied(gx, gy)
+                        if m:
+                            if m.level >= 5:
+                                audio.play('hit', 0.2)
+                            else:
+                                cost = m.upgrade_cost()
+                                if ship.credits >= cost:
+                                    ship.credits -= cost
+                                    m.level += 1
+                                    ship._recalc_stats()
+                                    audio.play('buy', 0.5)
                         return True
                     # Pick up module to move it
                     else:
@@ -940,14 +956,30 @@ class ShipBuilder:
                             audio.play('buy', 0.5)
                         return True
 
+                shrink_btns = self._shrink_button_rects(ship, ox, oy)
+                for direction, rect in shrink_btns.items():
+                    if rect.collidepoint(mx, my):
+                        if ship.shrink_grid(direction):
+                            audio.play('pickup', 0.4)
+                        return True
+
                 remove_rect = pygame.Rect(ox, oy + ship.grid_h * self.cell_size + 10, 100, 30)
                 if remove_rect.collidepoint(mx, my):
                     self.remove_mode = not self.remove_mode
+                    self.upgrade_mode = False
+                    self.selected_module_id = None
+                    return True
+
+                upg_rect = pygame.Rect(ox + 110, oy + ship.grid_h * self.cell_size + 10, 100, 30)
+                if upg_rect.collidepoint(mx, my):
+                    self.upgrade_mode = not self.upgrade_mode
+                    self.remove_mode = False
                     self.selected_module_id = None
                     return True
 
                 self.selected_module_id = None
                 self.remove_mode = False
+                self.upgrade_mode = False
 
             elif event.button == 3:
                 self.selected_module_id = None
@@ -972,12 +1004,24 @@ class ShipBuilder:
         cs = self.cell_size
         tw = ship.grid_w * cs
         th = ship.grid_h * cs
-        btn_size = 28
+        btn_size = 22
         return {
-            'up': pygame.Rect(ox + tw // 2 - btn_size // 2, oy - btn_size - 5, btn_size, btn_size),
-            'down': pygame.Rect(ox + tw // 2 - btn_size // 2, oy + th + 5, btn_size, btn_size),
-            'left': pygame.Rect(ox - btn_size - 5, oy + th // 2 - btn_size // 2, btn_size, btn_size),
-            'right': pygame.Rect(ox + tw + 5, oy + th // 2 - btn_size // 2, btn_size, btn_size),
+            'up': pygame.Rect(ox + tw // 2 - btn_size - 2, oy - btn_size - 5, btn_size, btn_size),
+            'down': pygame.Rect(ox + tw // 2 - btn_size - 2, oy + th + 5, btn_size, btn_size),
+            'left': pygame.Rect(ox - btn_size - 5, oy + th // 2 - btn_size - 2, btn_size, btn_size),
+            'right': pygame.Rect(ox + tw + 5, oy + th // 2 - btn_size - 2, btn_size, btn_size),
+        }
+
+    def _shrink_button_rects(self, ship, ox, oy):
+        cs = self.cell_size
+        tw = ship.grid_w * cs
+        th = ship.grid_h * cs
+        btn_size = 22
+        return {
+            'up': pygame.Rect(ox + tw // 2 + 2, oy - btn_size - 5, btn_size, btn_size),
+            'down': pygame.Rect(ox + tw // 2 + 2, oy + th + 5, btn_size, btn_size),
+            'left': pygame.Rect(ox - btn_size - 5, oy + th // 2 + 2, btn_size, btn_size),
+            'right': pygame.Rect(ox + tw + 5, oy + th // 2 + 2, btn_size, btn_size),
         }
 
     def draw(self, surface, ship: Ship, time):
@@ -1004,8 +1048,11 @@ class ShipBuilder:
         elif self.remove_mode:
             draw_text(surface, "SELL MODE — Click a module to sell it",
                      SCREEN_W // 2, 62, NEON_RED, 12, center=True)
+        elif self.upgrade_mode:
+            draw_text(surface, "UPGRADE MODE — Click a module to level it up (max Lv.5)",
+                     SCREEN_W // 2, 62, NEON_GREEN, 12, center=True)
         else:
-            draw_text(surface, "Click module on grid to MOVE it | Shop to BUY | SELL to remove",
+            draw_text(surface, "Click module to MOVE | Shop to BUY | SELL / UPGRADE buttons below",
                      SCREEN_W // 2, 62, DIM_CYAN, 11, center=True)
 
         # Grid
@@ -1029,16 +1076,33 @@ class ShipBuilder:
             pygame.draw.rect(surface, m.defn.glow_color, mod_rect, 2)
             name = m.defn.name[:9] + "." if len(m.defn.name) > 10 else m.defn.name
             draw_text(surface, name, mx2 + mw // 2, my2 + mh // 2 - 6, WHITE, 9, center=True)
+            # Level stars
+            if m.level > 1:
+                stars = "*" * (m.level - 1)
+                draw_text(surface, stars, mx2 + mw // 2, my2 + mh // 2 + 8, NEON_YELLOW, 10, center=True)
             if m.hp < m.max_hp:
                 draw_bar(surface, mx2 + 4, my2 + mh - 10, mw - 8, 4, m.hp / m.max_hp, NEON_GREEN, (20, 20, 30))
-            if self.remove_mode and m.defn.id != 'core':
-                mouse_gx = (mx - ox) // cs
-                mouse_gy = (my - oy) // cs
-                for cx, cy in m.cells():
-                    if cx == mouse_gx and cy == mouse_gy:
-                        pygame.draw.rect(surface, NEON_RED, mod_rect, 3)
-                        draw_text(surface, f"Sell: +${m.defn.cost // 2}", mx2 + mw // 2, my2 - 12,
-                                 NEON_YELLOW, 10, center=True)
+            # Mode-specific highlights on hover
+            mouse_gx = (mx - ox) // cs
+            mouse_gy = (my - oy) // cs
+            hovering = any(cx == mouse_gx and cy == mouse_gy for cx, cy in m.cells())
+            if self.remove_mode and m.defn.id != 'core' and hovering:
+                pygame.draw.rect(surface, NEON_RED, mod_rect, 3)
+                refund = m.defn.cost // 2 + (m.level - 1) * 30
+                draw_text(surface, f"Sell: +${refund}", mx2 + mw // 2, my2 - 12,
+                         NEON_YELLOW, 10, center=True)
+            elif self.upgrade_mode and hovering:
+                if m.level >= 5:
+                    pygame.draw.rect(surface, (100, 100, 100), mod_rect, 3)
+                    draw_text(surface, "MAX", mx2 + mw // 2, my2 - 12,
+                             (150, 150, 150), 10, center=True)
+                else:
+                    pygame.draw.rect(surface, NEON_GREEN, mod_rect, 3)
+                    cost = m.upgrade_cost()
+                    can_afford = ship.credits >= cost
+                    c = NEON_GREEN if can_afford else NEON_RED
+                    draw_text(surface, f"Lv{m.level} -> Lv{m.level+1}: ${cost}",
+                             mx2 + mw // 2, my2 - 12, c, 10, center=True)
 
         # Placement preview (new module from shop)
         if self.selected_module_id:
@@ -1075,7 +1139,7 @@ class ShipBuilder:
                                   defn.width * cs - 4, defn.height * cs - 4)
             pygame.draw.rect(surface, NEON_BLUE, cur_rect, 2)
 
-        # Expand buttons
+        # Expand buttons (+)
         expand_btns = self._expand_button_rects(ship, ox, oy)
         arrows = {'up': '^', 'down': 'v', 'left': '<', 'right': '>'}
         for direction, rect in expand_btns.items():
@@ -1084,9 +1148,19 @@ class ShipBuilder:
             if ship.credits < EXPAND_COST:
                 color = (40, 40, 40)
             pygame.draw.rect(surface, color, rect, 2)
-            draw_text(surface, arrows[direction], rect.centerx, rect.centery, color, 14, center=True)
-        draw_text(surface, f"Expand: ${EXPAND_COST}", ox + ship.grid_w * cs // 2,
-                 oy - 50, DIM_CYAN, 10, center=True)
+            draw_text(surface, "+", rect.centerx, rect.centery, color, 16, center=True)
+
+        # Shrink buttons (-)
+        shrink_btns = self._shrink_button_rects(ship, ox, oy)
+        for direction, rect in shrink_btns.items():
+            hover = rect.collidepoint(mx, my)
+            can = ship.can_shrink(direction)
+            color = NEON_ORANGE if hover and can else (DIM_PINK if can else (40, 40, 40))
+            pygame.draw.rect(surface, color, rect, 2)
+            draw_text(surface, "-", rect.centerx, rect.centery, color, 16, center=True)
+
+        draw_text(surface, f"Expand: ${EXPAND_COST} | Shrink: refund ${EXPAND_COST // 2}",
+                 ox + ship.grid_w * cs // 2, oy - 50, DIM_CYAN, 10, center=True)
 
         # Remove button
         remove_rect = pygame.Rect(ox, oy + ship.grid_h * cs + 10, 100, 30)
@@ -1094,6 +1168,13 @@ class ShipBuilder:
         pygame.draw.rect(surface, rm_color, remove_rect, 2)
         draw_text(surface, "SELL MODE" if self.remove_mode else "SELL",
                  remove_rect.centerx, remove_rect.centery, rm_color, 12, center=True)
+
+        # Upgrade button
+        upg_rect = pygame.Rect(ox + 110, oy + ship.grid_h * cs + 10, 100, 30)
+        up_color = NEON_GREEN if self.upgrade_mode else DIM_GREEN
+        pygame.draw.rect(surface, up_color, upg_rect, 2)
+        draw_text(surface, "UPGRADE MODE" if self.upgrade_mode else "UPGRADE",
+                 upg_rect.centerx, upg_rect.centery, up_color, 11, center=True)
 
         # Shop panel
         shop_x = ox + ship.grid_w * cs + 60
@@ -1796,3 +1877,238 @@ class GameOverScreen:
             draw_text(surface, "RESTART", btn.centerx, btn.centery, c(NEON_CYAN), 18, center=True)
             draw_text(surface, "Press R or ENTER", SCREEN_W // 2, SCREEN_H // 2 + 140,
                      c(DIM_CYAN), 12, center=True)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  CHEST UI — deposit/withdraw specific amounts
+# ═════════════════════════════════════════════════════════════════════════════
+class ChestUI:
+    def __init__(self):
+        self.active = False
+        self.chest = None
+        self.mode = 'deposit'
+        self.module_scroll = 0
+
+    def open(self, chest):
+        self.active = True
+        self.chest = chest
+        self.mode = 'deposit'
+        self.module_scroll = 0
+
+    def close(self):
+        self.active = False
+        self.chest = None
+
+    def handle_event(self, event, ship, audio):
+        """Returns 'close' or None."""
+        if not self.active or not self.chest:
+            return None
+
+        if event.type == pygame.KEYDOWN:
+            if event.key in (pygame.K_ESCAPE, pygame.K_f):
+                return 'close'
+
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            mx, my = event.pos
+
+            # Mode tabs
+            dep_rect = pygame.Rect(SCREEN_W // 2 - 110, 140, 100, 35)
+            wd_rect = pygame.Rect(SCREEN_W // 2 + 10, 140, 100, 35)
+            if dep_rect.collidepoint(mx, my):
+                self.mode = 'deposit'
+                return None
+            if wd_rect.collidepoint(mx, my):
+                self.mode = 'withdraw'
+                return None
+
+            # Amount buttons for credits
+            credits_y = 230
+            for i, amt_label in enumerate([('10', 10), ('100', 100), ('1000', 1000), ('ALL', -1)]):
+                label, amt = amt_label
+                btn = pygame.Rect(SCREEN_W // 2 - 180 + i * 85, credits_y, 75, 30)
+                if btn.collidepoint(mx, my):
+                    self._transfer_credits(ship, amt)
+                    audio.play('pickup', 0.3)
+                    return None
+
+            # Amount buttons for ore
+            ore_y = 330
+            for i, amt_label in enumerate([('5', 5), ('20', 20), ('100', 100), ('ALL', -1)]):
+                label, amt = amt_label
+                btn = pygame.Rect(SCREEN_W // 2 - 180 + i * 85, ore_y, 75, 30)
+                if btn.collidepoint(mx, my):
+                    self._transfer_ore(ship, amt)
+                    audio.play('pickup', 0.3)
+                    return None
+
+            # Module list (deposit: from ship, withdraw: from chest)
+            mod_y_start = 400
+            if self.mode == 'deposit':
+                # Ship's non-core modules that can be removed
+                items = [m for m in ship.modules if m.defn.id != 'core']
+                for i, m in enumerate(items[self.module_scroll:self.module_scroll + 5]):
+                    btn = pygame.Rect(SCREEN_W // 2 - 220, mod_y_start + i * 30, 440, 26)
+                    if btn.collidepoint(mx, my):
+                        # Move module from ship to chest
+                        self.chest.stored_modules.append([m.defn.id, m.level])
+                        ship.remove_module(m)
+                        audio.play('pickup', 0.3)
+                        return None
+            else:
+                # Chest modules
+                items = self.chest.stored_modules
+                for i, (mid, level) in enumerate(items[self.module_scroll:self.module_scroll + 5]):
+                    btn = pygame.Rect(SCREEN_W // 2 - 220, mod_y_start + i * 30, 440, 26)
+                    if btn.collidepoint(mx, my):
+                        # Place module on ship (needs empty spot)
+                        from game.ship import MODULE_DEFS
+                        defn = MODULE_DEFS.get(mid)
+                        if defn:
+                            placed = False
+                            for gy2 in range(ship.grid_h):
+                                for gx2 in range(ship.grid_w):
+                                    if ship.can_place(mid, gx2, gy2):
+                                        m = ship.place_module(mid, gx2, gy2)
+                                        if m:
+                                            m.level = level
+                                            ship._recalc_stats()
+                                        placed = True
+                                        break
+                                if placed:
+                                    break
+                            if placed:
+                                self.chest.stored_modules.pop(self.module_scroll + i)
+                                audio.play('buy', 0.4)
+                        return None
+
+            # Close button
+            close_rect = pygame.Rect(SCREEN_W // 2 - 80, SCREEN_H - 60, 160, 40)
+            if close_rect.collidepoint(mx, my):
+                return 'close'
+
+        if event.type == pygame.MOUSEWHEEL:
+            self.module_scroll = max(0, self.module_scroll - event.y)
+
+        return None
+
+    def _transfer_credits(self, ship, amount):
+        if amount == -1:
+            amount = ship.credits if self.mode == 'deposit' else self.chest.stored_credits
+        if self.mode == 'deposit':
+            amount = min(amount, ship.credits)
+            ship.credits -= amount
+            self.chest.stored_credits += amount
+        else:
+            amount = min(amount, self.chest.stored_credits)
+            self.chest.stored_credits -= amount
+            ship.credits += amount
+
+    def _transfer_ore(self, ship, amount):
+        if amount == -1:
+            amount = ship.ore if self.mode == 'deposit' else self.chest.stored_ore
+        if self.mode == 'deposit':
+            amount = min(amount, ship.ore)
+            ship.ore -= amount
+            self.chest.stored_ore += amount
+        else:
+            space = ship.ore_capacity - ship.ore
+            amount = min(amount, self.chest.stored_ore, space)
+            self.chest.stored_ore -= amount
+            ship.ore += amount
+
+    def draw(self, surface, ship, time):
+        if not self.active or not self.chest:
+            return
+
+        # Overlay
+        overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 200))
+        surface.blit(overlay, (0, 0))
+
+        mx, my = pygame.mouse.get_pos()
+
+        # Title
+        draw_text(surface, "STORAGE CHEST", SCREEN_W // 2, 60, NEON_YELLOW, 28, center=True)
+
+        # Mode tabs
+        dep_rect = pygame.Rect(SCREEN_W // 2 - 110, 140, 100, 35)
+        wd_rect = pygame.Rect(SCREEN_W // 2 + 10, 140, 100, 35)
+        dep_c = NEON_GREEN if self.mode == 'deposit' else DIM_GREEN
+        wd_c = NEON_ORANGE if self.mode == 'withdraw' else (80, 50, 0)
+        draw_neon_rect(surface, dep_c, dep_rect, 2 if self.mode == 'deposit' else 1)
+        draw_neon_rect(surface, wd_c, wd_rect, 2 if self.mode == 'withdraw' else 1)
+        draw_text(surface, "DEPOSIT", dep_rect.centerx, dep_rect.centery, dep_c, 13, center=True)
+        draw_text(surface, "WITHDRAW", wd_rect.centerx, wd_rect.centery, wd_c, 13, center=True)
+
+        # Status display
+        status_y = 195
+        draw_text(surface, f"Ship: ${ship.credits}  |  {int(ship.ore)} ore",
+                 SCREEN_W // 4, status_y, NEON_CYAN, 13, center=True)
+        draw_text(surface, f"Chest: ${self.chest.stored_credits}  |  {int(self.chest.stored_ore)} ore",
+                 SCREEN_W * 3 // 4, status_y, NEON_YELLOW, 13, center=True)
+
+        # Credits section
+        draw_text(surface, "CREDITS", SCREEN_W // 2, 215, NEON_YELLOW, 14, center=True)
+        for i, (label, amt) in enumerate([('10', 10), ('100', 100), ('1000', 1000), ('ALL', -1)]):
+            btn = pygame.Rect(SCREEN_W // 2 - 180 + i * 85, 230, 75, 30)
+            hover = btn.collidepoint(mx, my)
+            c = NEON_YELLOW if hover else (100, 80, 30)
+            draw_neon_rect(surface, c, btn, 2 if hover else 1)
+            draw_text(surface, label, btn.centerx, btn.centery, c, 14, center=True)
+
+        # Ore section
+        draw_text(surface, "ORE", SCREEN_W // 2, 315, ORE_COLOR, 14, center=True)
+        for i, (label, amt) in enumerate([('5', 5), ('20', 20), ('100', 100), ('ALL', -1)]):
+            btn = pygame.Rect(SCREEN_W // 2 - 180 + i * 85, 330, 75, 30)
+            hover = btn.collidepoint(mx, my)
+            c = ORE_COLOR if hover else (80, 55, 30)
+            draw_neon_rect(surface, c, btn, 2 if hover else 1)
+            draw_text(surface, label, btn.centerx, btn.centery, c, 14, center=True)
+
+        # Direction indicator
+        arrow_y = 375
+        if self.mode == 'deposit':
+            draw_text(surface, "DEPOSIT: Ship -> Chest", SCREEN_W // 2, arrow_y, NEON_GREEN, 12, center=True)
+        else:
+            draw_text(surface, "WITHDRAW: Chest -> Ship", SCREEN_W // 2, arrow_y, NEON_ORANGE, 12, center=True)
+
+        # Modules section
+        draw_text(surface, "MODULES (click to transfer)", SCREEN_W // 2, 395, NEON_CYAN, 12, center=True)
+        mod_y_start = 400
+        if self.mode == 'deposit':
+            from game.ship import MODULE_DEFS as _MD
+            items = [(m.defn.id, m.level, m.defn.name) for m in ship.modules if m.defn.id != 'core']
+            if not items:
+                draw_text(surface, "(no removable modules on ship)", SCREEN_W // 2, mod_y_start + 20,
+                         (80, 80, 100), 10, center=True)
+        else:
+            from game.ship import MODULE_DEFS as _MD
+            items = [(mid, lvl, _MD[mid].name if mid in _MD else mid)
+                    for mid, lvl in self.chest.stored_modules]
+            if not items:
+                draw_text(surface, "(chest has no modules)", SCREEN_W // 2, mod_y_start + 20,
+                         (80, 80, 100), 10, center=True)
+
+        for i, (mid, level, mname) in enumerate(items[self.module_scroll:self.module_scroll + 5]):
+            btn = pygame.Rect(SCREEN_W // 2 - 220, mod_y_start + i * 30, 440, 26)
+            hover = btn.collidepoint(mx, my)
+            c = NEON_CYAN if hover else DIM_CYAN
+            draw_neon_rect(surface, c, btn, 2 if hover else 1)
+            stars = " " + "*" * (level - 1) if level > 1 else ""
+            label = f"{mname} (Lv.{level}){stars}"
+            draw_text(surface, label, btn.x + 10, btn.y + 6, c, 12)
+            if hover:
+                action = "-> Chest" if self.mode == 'deposit' else "-> Ship"
+                draw_text(surface, action, btn.right - 70, btn.y + 6, NEON_YELLOW, 11)
+
+        if len(items) > 5:
+            draw_text(surface, f"({self.module_scroll + 1}-{min(self.module_scroll + 5, len(items))}/{len(items)}) scroll",
+                     SCREEN_W // 2, mod_y_start + 155, (80, 80, 100), 10, center=True)
+
+        # Close button
+        close_rect = pygame.Rect(SCREEN_W // 2 - 80, SCREEN_H - 60, 160, 40)
+        hover = close_rect.collidepoint(mx, my)
+        pulse = 0.7 + 0.3 * math.sin(time * 3)
+        c = NEON_CYAN if hover else safe_color(NEON_CYAN[0] * pulse, NEON_CYAN[1] * pulse, NEON_CYAN[2] * pulse)
+        draw_neon_rect(surface, c, close_rect, 2)
+        draw_text(surface, "CLOSE [F/ESC]", close_rect.centerx, close_rect.centery, c, 14, center=True)

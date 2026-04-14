@@ -31,6 +31,7 @@ def save_game(game) -> bool:
                 "alive": ship.alive,
                 "docked": ship.docked,
                 "refinery_enabled": ship.refinery_enabled,
+                "skin": ship.skin,
                 "sectors_discovered": ship.sectors_discovered,
                 "farthest_sector": ship.farthest_sector,
                 "modules": [
@@ -39,6 +40,7 @@ def save_game(game) -> bool:
                         "gx": m.gx,
                         "gy": m.gy,
                         "hp": m.hp,
+                        "level": m.level,
                     }
                     for m in ship.modules
                 ],
@@ -140,6 +142,7 @@ def load_game(game) -> bool:
         ship.alive = sd["alive"]
         ship.docked = sd["docked"]
         ship.refinery_enabled = sd.get("refinery_enabled", True)
+        ship.skin = sd.get("skin", "default")
         ship.sectors_discovered = sd.get("sectors_discovered", 0)
         ship.farthest_sector = sd.get("farthest_sector", 0)
         ship.invuln_timer = 0
@@ -151,6 +154,7 @@ def load_game(game) -> bool:
                 placed = ship.place_module(md["id"], md["gx"], md["gy"])
                 if placed:
                     placed.hp = md["hp"]
+                    placed.level = md.get("level", 1)
         ship._recalc_stats()
 
         # Restore world
