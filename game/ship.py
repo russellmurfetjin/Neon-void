@@ -119,6 +119,8 @@ _reg(ModuleDef("Kamikaze Bay", "drone_kami", 1, 1, (80, 30, 30), NEON_RED, 220,
                "Spawns 3 kamikaze drones that ram enemies.", drone_type='kamikaze', drone_count=3))
 _reg(ModuleDef("Drone Bay (Laser)", "drone_laser", 1, 2, (80, 30, 30), NEON_PINK, 400,
                "Spawns 2 laser drones. Beams enemies.", drone_type='laser', drone_count=2))
+_reg(ModuleDef("Mining Drone Bay", "drone_miner", 1, 2, (60, 80, 30), ORE_COLOR, 320,
+               "Spawns 2 mining drones that auto-mine asteroids.", drone_type='miner', drone_count=2))
 
 # Probe
 _reg(ModuleDef("Probe Bay", "probe_bay", 1, 1, (50, 60, 50), NEON_GREEN, 80,
@@ -250,7 +252,8 @@ class Ship:
         self.distress_charging = False
         self.distress_timer = 0.0
         self.distress_cooldown = 0.0
-        self.skin = 'default'  # 'default', 'arrowhead', 'battleship', 'stealth', 'raptor'
+        self.skin = 'default'
+        self.drone_target = None  # designated enemy for drones to focus
 
         # Place default modules
         self._place_defaults()

@@ -584,21 +584,38 @@ class Drone:
         self.fire_cooldown = 0.0
         self.orbit_angle = random.uniform(0, math.pi * 2)
         self.exploded = False
+        # Miner-specific state
+        self.mine_target = None
+        self.mine_state = 'idle'  # 'idle', 'going', 'mining', 'returning'
+        self.cargo = 0.0
+        self.mine_timer = 0.0
 
-    def update(self, dt, ship, enemies, projectiles, particles, active_beams):
+    def update(self, dt, ship, enemies, projectiles, particles, active_beams, asteroids=None):
         if not self.alive:
             return
 
-        # Find nearest enemy
+        # Mining drones have their own logic
+        if self.drone_type == 'miner':
+            self._mine_update(dt, ship, asteroids or [], particles)
+            return
+
+        # Prefer designated target if set + alive + in range + can take damage
+        target = getattr(ship, 'drone_target', None)
         best_enemy = None
-        best_d = 350
-        for e in enemies:
-            if not e.alive:
-                continue
-            d = dist(self.x, self.y, e.x, e.y)
-            if d < best_d:
-                best_d = d
-                best_enemy = e
+        if (target is not None and getattr(target, 'alive', False)
+                and hasattr(target, 'take_hit')
+                and dist(self.x, self.y, target.x, target.y) < 800):
+            best_enemy = target
+        else:
+            # Auto-target nearest
+            best_d = 350
+            for e in enemies:
+                if not e.alive:
+                    continue
+                d = dist(self.x, self.y, e.x, e.y)
+                if d < best_d:
+                    best_d = d
+                    best_enemy = e
 
         self.fire_cooldown = max(0, self.fire_cooldown - dt)
 
@@ -688,6 +705,78 @@ class Drone:
         self.x += self.vx * dt
         self.y += self.vy * dt
 
+    def _mine_update(self, dt, ship, asteroids, particles):
+        max_cargo = 20.0
+        # Pick target if needed
+        if self.mine_state == 'idle' or (self.mine_target and self.mine_target.depleted):
+            self.mine_target = None
+            best_d = 600
+            for a in asteroids:
+                if a.depleted:
+                    continue
+                d = dist(self.x, self.y, a.x, a.y)
+                if d < best_d:
+                    best_d = d
+                    self.mine_target = a
+            if self.mine_target:
+                self.mine_state = 'going'
+            else:
+                # Orbit ship if no asteroids
+                self.orbit_angle += dt * 1.5
+                tx = ship.x + math.cos(self.orbit_angle) * 60
+                ty = ship.y + math.sin(self.orbit_angle) * 60
+                self._fly_to(tx, ty, dt, 350)
+                return
+
+        if self.mine_state == 'going' and self.mine_target:
+            d = dist(self.x, self.y, self.mine_target.x, self.mine_target.y)
+            if d < self.mine_target.radius + 5:
+                self.mine_state = 'mining'
+                self.mine_timer = 0
+            else:
+                self._fly_to(self.mine_target.x, self.mine_target.y, dt, 280)
+
+        elif self.mine_state == 'mining' and self.mine_target:
+            self.mine_timer += dt
+            rate = max_cargo / 2.5  # mine 20 ore in 2.5 seconds
+            mined = min(rate * dt, self.mine_target.ore, max_cargo - self.cargo)
+            self.cargo += mined
+            self.mine_target.ore -= mined
+            if random.random() < 0.4:
+                particles.emit(self.mine_target.x + random.uniform(-10, 10),
+                              self.mine_target.y + random.uniform(-10, 10),
+                              random.uniform(-30, 30), random.uniform(-30, 30),
+                              0.3, ORE_COLOR, 1.5)
+            if self.cargo >= max_cargo or self.mine_target.ore <= 0:
+                self.mine_state = 'returning'
+                if self.mine_target.ore <= 0:
+                    self.mine_target.depleted = True
+
+        elif self.mine_state == 'returning':
+            d = dist(self.x, self.y, ship.x, ship.y)
+            if d < 25:
+                space = ship.ore_capacity - ship.ore
+                ship.ore += min(self.cargo, space)
+                self.cargo = 0
+                self.mine_state = 'idle'
+            else:
+                self._fly_to(ship.x, ship.y, dt, 350)
+
+    def _fly_to(self, tx, ty, dt, max_spd):
+        dx, dy = tx - self.x, ty - self.y
+        d = max(1, math.sqrt(dx * dx + dy * dy))
+        self.vx += (dx / d) * 350 * dt
+        self.vy += (dy / d) * 350 * dt
+        self.vx *= 0.93
+        self.vy *= 0.93
+        sp = math.sqrt(self.vx ** 2 + self.vy ** 2)
+        if sp > max_spd:
+            self.vx = self.vx / sp * max_spd
+            self.vy = self.vy / sp * max_spd
+        self.angle = math.atan2(self.vy, self.vx)
+        self.x += self.vx * dt
+        self.y += self.vy * dt
+
     def take_hit(self, damage, particles):
         self.hp -= damage
         particles.burst(self.x, self.y, 4, 60, 0.2, self.color(), 1.5)
@@ -700,6 +789,8 @@ class Drone:
             return NEON_RED
         if self.drone_type == 'laser':
             return NEON_PINK
+        if self.drone_type == 'miner':
+            return ORE_COLOR
         return NEON_YELLOW
 
     def draw(self, surface, camera, time):
@@ -986,6 +1077,8 @@ class World:
         self.drones: List[Drone] = []
         self.escort_npc: Optional[EscortNPC] = None
         self._active_beams: List[dict] = []
+        # Per-remote-player mining loot {pid: [credits, ore]}
+        self.player_loot = {}
         self.game_time = 0.0
         self.void_titan_killed = False
         self.titan_victory_shown = False
@@ -1075,7 +1168,7 @@ class World:
 
         # Update all drones
         for d in self.drones:
-            d.update(dt, ship, self.enemies, self.projectiles, particles, self._active_beams)
+            d.update(dt, ship, self.enemies, self.projectiles, particles, self._active_beams, self.asteroids)
 
         # Remove dead drones
         self.drones = [d for d in self.drones if d.alive]
@@ -1772,14 +1865,21 @@ class World:
                     continue
                 if dist(p.x, p.y, a.x, a.y) < a.radius:
                     p.alive = False
-                    # Only player projectiles mine resources
-                    if p.owner in ('player', 'remote_player'):
-                        chip = min(a.ore, p.damage * 0.5)
-                        a.ore -= chip
+                    chip = min(a.ore, p.damage * 0.5)
+                    a.ore -= chip
+                    if p.owner == 'player':
+                        # Host gets loot
                         ore_space = ship.ore_capacity - ship.ore
                         ship.ore += min(chip * 0.7, ore_space)
                         ship.fuel += min(chip * 0.2, ship.fuel_capacity - ship.fuel)
                         ship.credits += int(chip)
+                    elif p.owner == 'remote_player':
+                        # Send loot to that specific remote player
+                        pid = getattr(p, '_remote_pid', -1)
+                        if pid > 0:
+                            self.player_loot[pid] = self.player_loot.get(pid, [0, 0.0])
+                            self.player_loot[pid][0] += int(chip)
+                            self.player_loot[pid][1] += chip * 0.7
                     # All projectiles spark on impact
                     particles.burst(p.x, p.y, 10, 90, 0.25, NEON_ORANGE, 2)
                     particles.burst(p.x, p.y, 3, 40, 0.15, WHITE, 1)

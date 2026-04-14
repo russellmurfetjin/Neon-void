@@ -248,6 +248,45 @@ class Game:
                         idx = skins.index(self.ship.skin) if self.ship.skin in skins else 0
                         self.ship.skin = skins[(idx + 1) % len(skins)]
                         self.hud.notify(f"Skin: {self.ship.skin.upper()}", NEON_CYAN, 1.5)
+                    elif event.key == pygame.K_t:
+                        # Target enemy/asteroid/player nearest to mouse
+                        mx_t, my_t = pygame.mouse.get_pos()
+                        wmx_t, wmy_t = self.camera.screen_to_world(mx_t, my_t)
+                        best = None
+                        best_d = 250
+                        best_label = ''
+                        for e in self.world.enemies:
+                            if not e.alive:
+                                continue
+                            d = dist(wmx_t, wmy_t, e.x, e.y)
+                            if d < best_d:
+                                best_d = d
+                                best = e
+                                best_label = f"{e.enemy_type.upper()} ({int(e.hp)} HP)"
+                        for a in self.world.asteroids:
+                            if a.depleted:
+                                continue
+                            d = dist(wmx_t, wmy_t, a.x, a.y)
+                            if d < best_d:
+                                best_d = d
+                                best = a
+                                best_label = f"Asteroid ({int(a.ore)} ore)"
+                        if self.is_host and self.server:
+                            with self.server.lock:
+                                for rp in self.server.remote_players.values():
+                                    if not rp.alive:
+                                        continue
+                                    d = dist(wmx_t, wmy_t, rp.x, rp.y)
+                                    if d < best_d:
+                                        best_d = d
+                                        best = rp
+                                        best_label = f"Player {rp.name}"
+                        if best:
+                            self.ship.drone_target = best
+                            self.hud.notify(f"Drone target: {best_label}", NEON_YELLOW, 2.0)
+                        else:
+                            self.ship.drone_target = None
+                            self.hud.notify("No target. Drones return to auto-targeting.", DIM_CYAN, 1.5)
 
                 # Build mode events
                 if self.build_mode and not self.ship.docked:
@@ -335,6 +374,19 @@ class Game:
                             for a in self.world.asteroids
                             if a.depleted and (a.x - self.ship.x) ** 2 + (a.y - self.ship.y) ** 2 < 3000 ** 2
                         ][:50]
+                        self.server.buildings_snapshot = [
+                            {'x': round(b.x, 1), 'y': round(b.y, 1), 'bid': b.defn.id,
+                             'hp': round(b.hp, 1), 'mhp': b.max_hp, 'lbl': b.label}
+                            for b in self.world.buildings
+                            if b.alive and (b.x - self.ship.x) ** 2 + (b.y - self.ship.y) ** 2 < 4000 ** 2
+                        ][:60]
+                        # Transfer per-player loot from world to server
+                        for pid, loot in self.world.player_loot.items():
+                            if pid not in self.server.player_loot:
+                                self.server.player_loot[pid] = [0, 0.0]
+                            self.server.player_loot[pid][0] += loot[0]
+                            self.server.player_loot[pid][1] += loot[1]
+                        self.world.player_loot.clear()
                 except Exception as e:
                     if not hasattr(self, '_last_mp_ov_err') or self.time - self._last_mp_ov_err > 5:
                         log.error(f"MP overlay sync error: {e}")
@@ -453,6 +505,20 @@ class Game:
                             for a in self.world.asteroids
                             if a.depleted and (a.x - self.ship.x) ** 2 + (a.y - self.ship.y) ** 2 < 3000 ** 2
                         ][:50]
+                        # Sync buildings (nearby only)
+                        self.server.buildings_snapshot = [
+                            {'x': round(b.x, 1), 'y': round(b.y, 1), 'bid': b.defn.id,
+                             'hp': round(b.hp, 1), 'mhp': b.max_hp, 'lbl': b.label}
+                            for b in self.world.buildings
+                            if b.alive and (b.x - self.ship.x) ** 2 + (b.y - self.ship.y) ** 2 < 4000 ** 2
+                        ][:60]
+                        # Transfer per-player loot from world to server
+                        for pid, loot in self.world.player_loot.items():
+                            if pid not in self.server.player_loot:
+                                self.server.player_loot[pid] = [0, 0.0]
+                            self.server.player_loot[pid][0] += loot[0]
+                            self.server.player_loot[pid][1] += loot[1]
+                        self.world.player_loot.clear()
                     except Exception as e:
                         if not hasattr(self, '_last_mp_err') or self.time - self._last_mp_err > 5:
                             log.error(f"MP sync error: {e}")
@@ -462,6 +528,13 @@ class Game:
                     with self.client.lock:
                         server_state = self.client.my_server_state
                         depleted = list(self.client.depleted_asteroids)
+                        # Consume shared loot
+                        if self.client.pending_loot_credits or self.client.pending_loot_ore:
+                            self.ship.credits += self.client.pending_loot_credits
+                            ore_space = self.ship.ore_capacity - self.ship.ore
+                            self.ship.ore += min(self.client.pending_loot_ore, ore_space)
+                            self.client.pending_loot_credits = 0
+                            self.client.pending_loot_ore = 0.0
 
                     # Server reconciliation — smoothly lerp toward authoritative position
                     if server_state:
@@ -783,11 +856,14 @@ class Game:
                             self.camera.shake(10)
                         break
 
-            # Check beams vs remote players
+            # Check beams vs remote players (skip beams the player fired themselves)
             for beam in self.world._active_beams:
+                beam_pid = beam.get('owner_pid', 0)  # 0 = host
                 for rp in remote_players:
                     if not rp.alive:
                         continue
+                    if rp.id == beam_pid:
+                        continue  # don't hit yourself with your own beam
                     # Point-to-line distance
                     sx, sy = beam['sx'], beam['sy']
                     ex, ey = beam['ex'], beam['ey']
@@ -910,6 +986,7 @@ class Game:
                 self.world._active_beams.append({
                     'sx': sx, 'sy': sy, 'ex': ex, 'ey': ey,
                     'color': color, 'life': 0.12, 'width': 2,
+                    'owner_pid': action['pid'],
                 })
                 # Beam damage to enemies
                 for e in self.world.enemies:
@@ -1295,6 +1372,39 @@ class Game:
                 remote_beams = list(self.client.remote_beams)
                 remote_probes = list(self.client.remote_probes)
                 remote_enemies = list(self.client.remote_enemies)
+                remote_buildings_data = list(self.client.remote_buildings)
+
+            # Buildings from host — apply to local world for rendering
+            from game.building import Building, BUILDING_DEFS
+            seen_keys = set()
+            for bd in remote_buildings_data:
+                bid = bd.get('bid')
+                if bid not in BUILDING_DEFS:
+                    continue
+                bx, by = bd.get('x', 0), bd.get('y', 0)
+                key = (round(bx, 1), round(by, 1), bid)
+                seen_keys.add(key)
+                # Find or create local building
+                existing = None
+                for b in self.world.buildings:
+                    if (round(b.x, 1), round(b.y, 1), b.defn.id) == key:
+                        existing = b
+                        break
+                if existing:
+                    existing.hp = bd.get('hp', existing.hp)
+                    existing.label = bd.get('lbl', existing.label)
+                else:
+                    nb = Building(bx, by, bid)
+                    nb.hp = bd.get('hp', nb.hp)
+                    nb.max_hp = bd.get('mhp', nb.max_hp)
+                    nb.label = bd.get('lbl', '')
+                    self.world.buildings.append(nb)
+            # Remove client buildings that host no longer reports (within sync range)
+            self.world.buildings = [
+                b for b in self.world.buildings
+                if (round(b.x, 1), round(b.y, 1), b.defn.id) in seen_keys
+                or (b.x - self.ship.x) ** 2 + (b.y - self.ship.y) ** 2 > 4500 ** 2
+            ]
 
             # Probes
             for p in remote_probes:
@@ -1504,6 +1614,26 @@ class Game:
                          self._get_mp_players())
 
     def _draw_indicators(self):
+        # Drone target indicator
+        t = getattr(self.ship, 'drone_target', None)
+        if t and not t.alive:
+            self.ship.drone_target = None
+            t = None
+        if t:
+            sx, sy = self.camera.world_to_screen(t.x, t.y)
+            r = (t.radius + 8) * self.camera.zoom
+            pulse = 0.6 + 0.4 * math.sin(self.time * 6)
+            tc = safe_color(255 * pulse, 255 * pulse, 0)
+            # Diamond brackets
+            for dx, dy in [(-r, -r), (r, -r), (r, r), (-r, r)]:
+                pygame.draw.line(self.screen, tc,
+                               (int(sx + dx), int(sy + dy)),
+                               (int(sx + dx * 0.6), int(sy + dy)), 2)
+                pygame.draw.line(self.screen, tc,
+                               (int(sx + dx), int(sy + dy)),
+                               (int(sx + dx), int(sy + dy * 0.6)), 2)
+            draw_text(self.screen, "TARGET", int(sx), int(sy - r - 14), tc, 10, center=True)
+
         if self.ship.docked:
             return
 

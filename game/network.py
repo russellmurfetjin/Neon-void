@@ -127,6 +127,8 @@ class GameServer:
         self.depleted_asteroids = []
         self.probes_snapshot = []
         self.enemies_snapshot = []
+        self.buildings_snapshot = []
+        self.player_loot = {}  # {pid: [credits, ore]} - per-player pending loot
         self.kill_feed = []
         self.scores: Dict[int, int] = {0: 0}
 
@@ -256,6 +258,11 @@ class GameServer:
             try:
                 with self.lock:
                     snapshot = self._build_snapshot()
+                    # Add this player's specific loot
+                    if pid in self.player_loot:
+                        loot = self.player_loot.pop(pid)
+                        if loot[0] or loot[1]:
+                            snapshot['loot'] = [loot[0], round(loot[1], 1)]
                 if not send_msg(conn, snapshot):
                     send_failures += 1
                     log.info(f"Send failed for player {pid} ({send_failures}/5)")
@@ -305,6 +312,8 @@ class GameServer:
             snapshot['probes'] = self.probes_snapshot
         if self.enemies_snapshot:
             snapshot['enemies'] = self.enemies_snapshot
+        if self.buildings_snapshot:
+            snapshot['buildings'] = self.buildings_snapshot
         if feed:
             snapshot['kill_feed'] = feed
         if self.scores:
@@ -489,6 +498,9 @@ class GameClient:
         self.depleted_asteroids: List = []
         self.remote_probes: List = []
         self.remote_enemies: List = []
+        self.remote_buildings: List = []
+        self.pending_loot_credits = 0
+        self.pending_loot_ore = 0.0
         self.my_server_state: Optional[dict] = None  # authoritative position from server
         self.error = ""
         self._send_lock = threading.Lock()
@@ -567,6 +579,11 @@ class GameClient:
                         self.depleted_asteroids = msg.get('depleted', [])
                         self.remote_probes = msg.get('probes', [])
                         self.remote_enemies = msg.get('enemies', [])
+                        self.remote_buildings = msg.get('buildings', [])
+                        loot = msg.get('loot')
+                        if loot:
+                            self.pending_loot_credits += loot[0]
+                            self.pending_loot_ore += loot[1]
                         self.settings = msg.get('settings', self.settings)
             except Exception as e:
                 if self.connected:
