@@ -1045,6 +1045,14 @@ class World:
         self._generate_missions()  # refresh available missions
         return f"{name} COMPLETE! +${reward}"
 
+    def _update_escort_mission(self, dt, ship, particles):
+        """Stub - escort missions not active in this version."""
+        pass
+
+    def track_delivery(self, ship):
+        """Stub - delivery missions not active in this version."""
+        pass
+
     def _update_drones(self, dt, ship, particles):
         """Spawn and update AI drones from drone bay modules."""
         # Count alive drones per owner module

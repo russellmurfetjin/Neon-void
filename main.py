@@ -297,42 +297,48 @@ class Game:
             # In multiplayer, keep the world running even during overlays so others don't freeze
             overlay_active = self.station_ui.active or self.sector_map.active or self.chest_ui.active
             if overlay_active and (self.is_host or self.is_client):
-                # Minimal update: keep world sim + multiplayer sync alive
-                self.world.update(dt, self.ship, self.particles, self.audio, self.camera)
-                if self.is_host and self.server:
-                    self.server.update_players(dt, self.ship)
-                    self._process_remote_combat()
-                    self._process_pvp(dt)
-                    self.server.beams_snapshot = [
-                        {'sx': b['sx'], 'sy': b['sy'], 'ex': b['ex'], 'ey': b['ey'],
-                         'color': list(b['color']), 'life': b['life']}
-                        for b in self.world._active_beams
-                    ]
-                    self.server.projectiles_snapshot = [
-                        {'x': round(p.x, 1), 'y': round(p.y, 1),
-                         'vx': round(p.vx, 1), 'vy': round(p.vy, 1),
-                         'type': p.proj_type, 'color': list(p.color)}
-                        for p in self.world.projectiles if p.alive and p.owner in ('player', 'remote_player')
-                    ][:30]
-                    self.server.probes_snapshot = [
-                        {'x': round(p.x, 1), 'y': round(p.y, 1),
-                         'state': p.state, 'cargo': round(p.cargo, 1)}
-                        for p in self.world.probes if p.alive
-                    ]
-                    sorted_enemies = sorted(self.world.enemies,
-                        key=lambda e: (e.x - self.ship.x)**2 + (e.y - self.ship.y)**2)
-                    self.server.enemies_snapshot = [
-                        {'x': round(e.x, 1), 'y': round(e.y, 1),
-                         'angle': round(e.angle, 2), 'hp': round(e.hp, 1),
-                         'max_hp': round(e.max_hp, 1), 'r': e.radius,
-                         'c': list(e.color), 'bc': list(e.body_color),
-                         'et': e.enemy_type, 'b': e.is_boss}
-                        for e in sorted_enemies[:20] if e.alive
-                    ]
-                    self.server.depleted_asteroids = [
-                        (round(a.x, 1), round(a.y, 1))
-                        for a in self.world.asteroids if a.depleted
-                    ]
+                try:
+                    self.world.update(dt, self.ship, self.particles, self.audio, self.camera)
+                    if self.is_host and self.server:
+                        self.server.update_players(dt, self.ship)
+                        self._process_remote_combat()
+                        self._process_pvp(dt)
+                        self.server.beams_snapshot = [
+                            {'sx': b['sx'], 'sy': b['sy'], 'ex': b['ex'], 'ey': b['ey'],
+                             'color': list(b['color']), 'life': b['life']}
+                            for b in self.world._active_beams[:10]
+                        ]
+                        self.server.projectiles_snapshot = [
+                            {'x': round(p.x, 1), 'y': round(p.y, 1),
+                             'vx': round(p.vx, 1), 'vy': round(p.vy, 1),
+                             'type': p.proj_type, 'color': list(p.color)}
+                            for p in self.world.projectiles[:40] if p.alive and p.owner in ('player', 'remote_player')
+                        ][:30]
+                        self.server.probes_snapshot = [
+                            {'x': round(p.x, 1), 'y': round(p.y, 1),
+                             'state': p.state, 'cargo': round(p.cargo, 1)}
+                            for p in self.world.probes if p.alive
+                        ][:15]
+                        nearby_enemies = [e for e in self.world.enemies if e.alive and
+                                         (e.x - self.ship.x) ** 2 + (e.y - self.ship.y) ** 2 < 2000 ** 2]
+                        nearby_enemies.sort(key=lambda e: (e.x - self.ship.x) ** 2 + (e.y - self.ship.y) ** 2)
+                        self.server.enemies_snapshot = [
+                            {'x': round(e.x, 1), 'y': round(e.y, 1),
+                             'angle': round(e.angle, 2), 'hp': round(e.hp, 1),
+                             'max_hp': round(e.max_hp, 1), 'r': e.radius,
+                             'c': list(e.color), 'bc': list(e.body_color),
+                             'et': e.enemy_type, 'b': e.is_boss}
+                            for e in nearby_enemies[:20]
+                        ]
+                        self.server.depleted_asteroids = [
+                            (round(a.x, 1), round(a.y, 1))
+                            for a in self.world.asteroids
+                            if a.depleted and (a.x - self.ship.x) ** 2 + (a.y - self.ship.y) ** 2 < 3000 ** 2
+                        ][:50]
+                except Exception as e:
+                    if not hasattr(self, '_last_mp_ov_err') or self.time - self._last_mp_ov_err > 5:
+                        log.error(f"MP overlay sync error: {e}")
+                        self._last_mp_ov_err = self.time
                 if self.is_client and self.client and self.client.connected:
                     # Client keeps sending idle input
                     self.client.send_input(
@@ -409,43 +415,48 @@ class Game:
 
                 # Multiplayer: update remote players and sync state
                 if self.is_host and self.server:
-                    self.server.update_players(dt, self.ship)
-                    self._process_remote_combat()
-                    self._process_pvp(dt)
-                    self.server.beams_snapshot = [
-                        {'sx': b['sx'], 'sy': b['sy'], 'ex': b['ex'], 'ey': b['ey'],
-                         'color': list(b['color']), 'life': b['life']}
-                        for b in self.world._active_beams
-                    ]
-                    # Sync projectiles so clients can see bullets
-                    self.server.projectiles_snapshot = [
-                        {'x': round(p.x, 1), 'y': round(p.y, 1),
-                         'vx': round(p.vx, 1), 'vy': round(p.vy, 1),
-                         'type': p.proj_type, 'color': list(p.color)}
-                        for p in self.world.projectiles if p.alive and p.owner in ('player', 'remote_player')
-                    ][:30]
-                    # Sync probes
-                    self.server.probes_snapshot = [
-                        {'x': round(p.x, 1), 'y': round(p.y, 1),
-                         'state': p.state, 'cargo': round(p.cargo, 1)}
-                        for p in self.world.probes if p.alive
-                    ]
-                    # Sync enemies (cap at 20 nearest for bandwidth)
-                    sorted_enemies = sorted(self.world.enemies,
-                        key=lambda e: (e.x - self.ship.x)**2 + (e.y - self.ship.y)**2)
-                    self.server.enemies_snapshot = [
-                        {'x': round(e.x, 1), 'y': round(e.y, 1),
-                         'angle': round(e.angle, 2), 'hp': round(e.hp, 1),
-                         'max_hp': round(e.max_hp, 1), 'r': e.radius,
-                         'c': list(e.color), 'bc': list(e.body_color),
-                         'et': e.enemy_type, 'b': e.is_boss}
-                        for e in sorted_enemies[:20] if e.alive
-                    ]
-                    # Sync depleted asteroids
-                    self.server.depleted_asteroids = [
-                        (round(a.x, 1), round(a.y, 1))
-                        for a in self.world.asteroids if a.depleted
-                    ]
+                    try:
+                        self.server.update_players(dt, self.ship)
+                        self._process_remote_combat()
+                        self._process_pvp(dt)
+                        self.server.beams_snapshot = [
+                            {'sx': b['sx'], 'sy': b['sy'], 'ex': b['ex'], 'ey': b['ey'],
+                             'color': list(b['color']), 'life': b['life']}
+                            for b in self.world._active_beams[:10]
+                        ]
+                        self.server.projectiles_snapshot = [
+                            {'x': round(p.x, 1), 'y': round(p.y, 1),
+                             'vx': round(p.vx, 1), 'vy': round(p.vy, 1),
+                             'type': p.proj_type, 'color': list(p.color)}
+                            for p in self.world.projectiles[:40] if p.alive and p.owner in ('player', 'remote_player')
+                        ][:30]
+                        self.server.probes_snapshot = [
+                            {'x': round(p.x, 1), 'y': round(p.y, 1),
+                             'state': p.state, 'cargo': round(p.cargo, 1)}
+                            for p in self.world.probes if p.alive
+                        ][:15]
+                        # Only sort nearby enemies for MP sync
+                        nearby_enemies = [e for e in self.world.enemies if e.alive and
+                                         (e.x - self.ship.x) ** 2 + (e.y - self.ship.y) ** 2 < 2000 ** 2]
+                        nearby_enemies.sort(key=lambda e: (e.x - self.ship.x) ** 2 + (e.y - self.ship.y) ** 2)
+                        self.server.enemies_snapshot = [
+                            {'x': round(e.x, 1), 'y': round(e.y, 1),
+                             'angle': round(e.angle, 2), 'hp': round(e.hp, 1),
+                             'max_hp': round(e.max_hp, 1), 'r': e.radius,
+                             'c': list(e.color), 'bc': list(e.body_color),
+                             'et': e.enemy_type, 'b': e.is_boss}
+                            for e in nearby_enemies[:20]
+                        ]
+                        # Only sync depleted asteroids near the player
+                        self.server.depleted_asteroids = [
+                            (round(a.x, 1), round(a.y, 1))
+                            for a in self.world.asteroids
+                            if a.depleted and (a.x - self.ship.x) ** 2 + (a.y - self.ship.y) ** 2 < 3000 ** 2
+                        ][:50]
+                    except Exception as e:
+                        if not hasattr(self, '_last_mp_err') or self.time - self._last_mp_err > 5:
+                            log.error(f"MP sync error: {e}")
+                            self._last_mp_err = self.time
                 # Client: reconcile with server authoritative state
                 if self.is_client and self.client and self.client.connected:
                     with self.client.lock:
@@ -621,26 +632,39 @@ class Game:
 
     def _start_host(self):
         """Start hosting a multiplayer game."""
-        self.server = GameServer(
-            friendly_fire=self.lobby.friendly_fire,
-            auto_shoot_players=self.lobby.auto_shoot,
-        )
+        # Stop any existing multiplayer state first
+        if self.server or self.client:
+            self._stop_multiplayer()
         try:
+            self.server = GameServer(
+                friendly_fire=self.lobby.friendly_fire,
+                auto_shoot_players=self.lobby.auto_shoot,
+            )
             self.server.start()
             self.is_host = True
             self.lobby.close()
-            self.hud.notify(f"Hosting on {get_local_ip()}:7777 — waiting for players...", NEON_PURPLE, 5.0)
-            # Set up kill callback for scoreboard
+            self.hud.notify(f"Hosting on {get_local_ip()}:7777 - waiting for players", NEON_PURPLE, 5.0)
+            log.info(f"Hosting started on {get_local_ip()}:7777")
             def on_kill(enemy, pid):
-                label = "BOSS" if enemy.is_boss else ("ELITE" if enemy.enemy_type == 'elite' else "enemy")
-                name = self.server.get_player_name(pid)
-                self.server.add_kill(name, label, [0, 255, 255])
-                self.server.add_score(pid)
+                try:
+                    label = "BOSS" if enemy.is_boss else ("ELITE" if enemy.enemy_type == 'elite' else "enemy")
+                    name = self.server.get_player_name(pid)
+                    self.server.add_kill(name, label, [0, 255, 255])
+                    self.server.add_score(pid)
+                except Exception:
+                    pass
             self.world.on_kill_callback = on_kill
         except Exception as e:
             self.lobby.status = f"Failed to start server: {e}"
             self.lobby.status_color = NEON_RED
+            log.error(f"Host start failed: {e}")
+            if self.server:
+                try:
+                    self.server.stop()
+                except Exception:
+                    pass
             self.server = None
+            self.is_host = False
 
     def _start_join(self):
         """Join a hosted game."""

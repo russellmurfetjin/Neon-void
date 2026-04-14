@@ -1,6 +1,11 @@
 Traceback (most recent call last):
-  File "C:\Users\russe\OneDrive\Coding\acturrly high quality games\triple a again\main.py", line 1032, in <module>
-  File "C:\Users\russe\OneDrive\Coding\acturrly high quality games\triple a again\main.py", line 382, in run
-    except Exception:
-    ^^
-SystemExit
+  File "C:\Users\russe\OneDrive\Coding\acturrly high quality games\triple a again\main.py", line 1575, in <module>
+    game.run()
+    ~~~~~~~~^^
+  File "C:\Users\russe\OneDrive\Coding\acturrly high quality games\triple a again\main.py", line 412, in run
+    self.world.update(dt, self.ship, self.particles, self.audio, self.camera)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\russe\OneDrive\Coding\acturrly high quality games\triple a again\game\world.py", line 1803, in update
+    self._update_escort_mission(dt, ship, particles)
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'World' object has no attribute '_update_escort_mission'
