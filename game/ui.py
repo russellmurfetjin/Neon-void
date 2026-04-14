@@ -300,6 +300,28 @@ class HUD:
                 else:
                     mm_surf.set_at((bx2, by2), b.defn.glow)
 
+        # Mission target
+        if world.active_mission and not world.active_mission.completed:
+            m = world.active_mission
+            target_wx, target_wy = None, None
+            if m.type == 'delivery' and getattr(m, 'target_station_x', None) is not None:
+                target_wx, target_wy = m.target_station_x, m.target_station_y
+            elif hasattr(m, 'target_sx'):
+                target_wx = m.target_sx * SECTOR_SIZE + SECTOR_SIZE / 2
+                target_wy = m.target_sy * SECTOR_SIZE + SECTOR_SIZE / 2
+            if target_wx is not None:
+                tx, ty = w2m(target_wx, target_wy)
+                if 0 <= tx < mm_size and 0 <= ty < mm_size:
+                    pygame.draw.circle(mm_surf, NEON_YELLOW, (tx, ty), 4, 1)
+                    pygame.draw.line(mm_surf, NEON_YELLOW, (tx - 5, ty), (tx + 5, ty), 1)
+                    pygame.draw.line(mm_surf, NEON_YELLOW, (tx, ty - 5), (tx, ty + 5), 1)
+                else:
+                    # Edge indicator pointing toward off-screen target
+                    pc = mm_size // 2
+                    edge_x = max(4, min(mm_size - 5, tx))
+                    edge_y = max(4, min(mm_size - 5, ty))
+                    pygame.draw.circle(mm_surf, NEON_YELLOW, (edge_x, edge_y), 3, 1)
+
         # Remote players
         if mp_players:
             for pid, pdata in mp_players.items():
@@ -352,7 +374,7 @@ class SectorMap:
             return True
         return False
 
-    def draw(self, surface, sectors: SectorManager, ship: Ship, time, mp_players=None, buildings=None):
+    def draw(self, surface, sectors: SectorManager, ship: Ship, time, mp_players=None, buildings=None, mission=None):
         if not self.active:
             return
 
@@ -456,6 +478,27 @@ class SectorMap:
                 pygame.draw.circle(surface, pc2, (rpx, rpy), max(3, cs // 6))
                 draw_text(surface, pdata.get('name', '?')[:8],
                          rpx, rpy - cs // 3, pc2, 9, center=True)
+
+        # Mission target
+        if mission and not mission.completed:
+            target_coord = None
+            label = ""
+            if mission.type == 'delivery' and getattr(mission, 'target_station_x', None) is not None:
+                target_coord = (int(math.floor(mission.target_station_x / SECTOR_SIZE)),
+                               int(math.floor(mission.target_station_y / SECTOR_SIZE)))
+                label = f"-> {getattr(mission, 'target_station_name', 'Station')}"
+            elif hasattr(mission, 'target_sx'):
+                target_coord = (mission.target_sx, mission.target_sy)
+                label = f"-> {mission.type.upper()}"
+            if target_coord:
+                tdx = target_coord[0] - player_coord[0]
+                tdy = target_coord[1] - player_coord[1]
+                tx = center_x + tdx * cs
+                ty = center_y + tdy * cs
+                pulse2 = 0.5 + 0.5 * math.sin(time * 4)
+                col = safe_color(255 * pulse2, 255 * pulse2, 0)
+                pygame.draw.rect(surface, col, (tx - cs // 2, ty - cs // 2, cs - 2, cs - 2), 3)
+                draw_text(surface, label, tx, ty - cs // 2 - 12, NEON_YELLOW, 10, center=True)
 
         # Player position
         px = center_x - cs // 2

@@ -1,11 +1,14 @@
 Traceback (most recent call last):
-  File "C:\Users\russe\OneDrive\Coding\acturrly high quality games\triple a again\main.py", line 1575, in <module>
+  File "C:\Users\russe\OneDrive\Coding\acturrly high quality games\triple a again\main.py", line 1709, in <module>
     game.run()
     ~~~~~~~~^^
-  File "C:\Users\russe\OneDrive\Coding\acturrly high quality games\triple a again\main.py", line 412, in run
-    self.world.update(dt, self.ship, self.particles, self.audio, self.camera)
-    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\russe\OneDrive\Coding\acturrly high quality games\triple a again\game\world.py", line 1803, in update
-    self._update_escort_mission(dt, ship, particles)
-    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-AttributeError: 'World' object has no attribute '_update_escort_mission'
+  File "C:\Users\russe\OneDrive\Coding\acturrly high quality games\triple a again\main.py", line 636, in run
+    self._draw_gameplay(dt)
+    ~~~~~~~~~~~~~~~~~~~^^^^
+  File "C:\Users\russe\OneDrive\Coding\acturrly high quality games\triple a again\main.py", line 1609, in _draw_gameplay
+    self._draw_indicators()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\russe\OneDrive\Coding\acturrly high quality games\triple a again\main.py", line 1624, in _draw_indicators
+    r = (t.radius + 8) * self.camera.zoom
+         ^^^^^^^^
+AttributeError: 'RemotePlayer' object has no attribute 'radius'

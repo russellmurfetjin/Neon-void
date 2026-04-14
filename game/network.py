@@ -88,6 +88,7 @@ class RemotePlayer:
         self.input_fire_gun = False
         self.input_fire_laser = False
         self.input_fire_missile = False
+        self.client_fuel = 100.0
         self.gun_cooldown = 0.0
         self.laser_cooldown = 0.0
         self.missile_cooldown = 0.0
@@ -241,6 +242,17 @@ class GameServer:
                             p.input_fire_gun = msg.get('gun', False)
                             p.input_fire_laser = msg.get('laser', False)
                             p.input_fire_missile = msg.get('missile', False)
+                            p.client_fuel = msg.get('fuel', 100)
+                elif msg.get('type') == 'build':
+                    self.pending_actions.append({
+                        'type': 'build', 'pid': pid,
+                        'bid': msg.get('bid'), 'x': msg.get('x'), 'y': msg.get('y'),
+                    })
+                elif msg.get('type') == 'demolish':
+                    self.pending_actions.append({
+                        'type': 'demolish', 'pid': pid,
+                        'x': msg.get('x'), 'y': msg.get('y'),
+                    })
                 elif msg.get('type') == 'disconnect':
                     log.info(f"Player {pid} sent disconnect")
                     break
@@ -351,6 +363,9 @@ class GameServer:
                     p.max_hp = host_ship.core_max_hp
 
                 thrust = host_ship.total_thrust
+                # Out-of-fuel: emergency thrusters only (matches single-player behavior)
+                if p.client_fuel <= 0:
+                    thrust = 300.0 * 0.15
                 tx, ty = 0, 0
                 if p.input_keys.get('w'): ty -= 1
                 if p.input_keys.get('s'): ty += 1
@@ -545,7 +560,27 @@ class GameClient:
                 pass
         log.info("Disconnected")
 
-    def send_input(self, keys, mouse_wx, mouse_wy, fire_gun, fire_laser, fire_missile):
+    def send_build(self, bid, wx, wy):
+        """Request the host to place a building."""
+        if not self.connected:
+            return
+        with self._send_lock:
+            try:
+                send_msg(self.socket, {'type': 'build', 'bid': bid, 'x': wx, 'y': wy})
+            except Exception:
+                self.connected = False
+
+    def send_demolish(self, wx, wy):
+        """Request the host to demolish a building."""
+        if not self.connected:
+            return
+        with self._send_lock:
+            try:
+                send_msg(self.socket, {'type': 'demolish', 'x': wx, 'y': wy})
+            except Exception:
+                self.connected = False
+
+    def send_input(self, keys, mouse_wx, mouse_wy, fire_gun, fire_laser, fire_missile, fuel=100):
         if not self.connected:
             return
         with self._send_lock:
@@ -554,6 +589,7 @@ class GameClient:
                     'type': 'input', 'keys': keys,
                     'mwx': round(mouse_wx, 1), 'mwy': round(mouse_wy, 1),
                     'gun': fire_gun, 'laser': fire_laser, 'missile': fire_missile,
+                    'fuel': round(fuel, 1),
                 })
             except Exception as e:
                 log.debug(f"Input send failed: {e}")

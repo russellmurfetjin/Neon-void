@@ -345,7 +345,10 @@ class Enemy:
         if d < 1:
             d = 1
 
-        # Aggro detection
+        # Aggro/disengage detection
+        if self.aggro and d > PATROL_DETECT_RANGE * 2.5:
+            # Player got too far away — return to patrol
+            self.aggro = False
         if not self.aggro:
             if d < PATROL_DETECT_RANGE:
                 self.aggro = True
@@ -681,7 +684,7 @@ class Drone:
                     })
                     best_enemy.take_hit(12, particles)
         else:
-            # Orbit the player
+            # Orbit the player (or sprint to catch up if far)
             self.orbit_angle += dt * 1.5
             orbit_r = 60
             target_x = ship.x + math.cos(self.orbit_angle) * orbit_r
@@ -689,15 +692,27 @@ class Drone:
             dx = target_x - self.x
             dy = target_y - self.y
             d = max(1, math.sqrt(dx * dx + dy * dy))
-            self.vx += (dx / d) * 400 * dt
-            self.vy += (dy / d) * 400 * dt
+            # If far from player, fly directly + match player velocity to catch up
+            if d > 200:
+                dx = ship.x - self.x
+                dy = ship.y - self.y
+                d = max(1, math.sqrt(dx * dx + dy * dy))
+                self.vx = (dx / d) * 800 + ship.vx
+                self.vy = (dy / d) * 800 + ship.vy
+            else:
+                self.vx += (dx / d) * 400 * dt
+                self.vy += (dy / d) * 400 * dt
             self.angle = math.atan2(self.vy, self.vx) if d > 5 else self.angle
 
-        # Drag and speed cap
-        self.vx *= 0.93
-        self.vy *= 0.93
+        # Drag and speed cap (boost cap when catching up to player)
+        ship_d = dist(self.x, self.y, ship.x, ship.y)
+        catch_up = ship_d > 200
+        self.vx *= 0.93 if not catch_up else 1.0
+        self.vy *= 0.93 if not catch_up else 1.0
         speed = math.sqrt(self.vx ** 2 + self.vy ** 2)
-        max_spd = 400 if self.drone_type == 'kamikaze' else 280
+        base_max = 400 if self.drone_type == 'kamikaze' else 280
+        ship_speed = math.sqrt(ship.vx ** 2 + ship.vy ** 2)
+        max_spd = max(base_max, ship_speed + 200)  # always faster than the player
         if speed > max_spd:
             self.vx = self.vx / speed * max_spd
             self.vy = self.vy / speed * max_spd
@@ -725,7 +740,7 @@ class Drone:
                 self.orbit_angle += dt * 1.5
                 tx = ship.x + math.cos(self.orbit_angle) * 60
                 ty = ship.y + math.sin(self.orbit_angle) * 60
-                self._fly_to(tx, ty, dt, 350)
+                self._fly_to(tx, ty, dt, 350, ship)
                 return
 
         if self.mine_state == 'going' and self.mine_target:
@@ -734,7 +749,7 @@ class Drone:
                 self.mine_state = 'mining'
                 self.mine_timer = 0
             else:
-                self._fly_to(self.mine_target.x, self.mine_target.y, dt, 280)
+                self._fly_to(self.mine_target.x, self.mine_target.y, dt, 280, ship)
 
         elif self.mine_state == 'mining' and self.mine_target:
             self.mine_timer += dt
@@ -760,19 +775,29 @@ class Drone:
                 self.cargo = 0
                 self.mine_state = 'idle'
             else:
-                self._fly_to(ship.x, ship.y, dt, 350)
+                self._fly_to(ship.x, ship.y, dt, 350, ship)
 
-    def _fly_to(self, tx, ty, dt, max_spd):
+    def _fly_to(self, tx, ty, dt, max_spd, ship=None):
         dx, dy = tx - self.x, ty - self.y
         d = max(1, math.sqrt(dx * dx + dy * dy))
-        self.vx += (dx / d) * 350 * dt
-        self.vy += (dy / d) * 350 * dt
-        self.vx *= 0.93
-        self.vy *= 0.93
+        # Sprint when far away
+        if d > 200:
+            self.vx = (dx / d) * max(800, max_spd * 2)
+            self.vy = (dy / d) * max(800, max_spd * 2)
+            if ship:
+                self.vx += ship.vx
+                self.vy += ship.vy
+        else:
+            self.vx += (dx / d) * 350 * dt
+            self.vy += (dy / d) * 350 * dt
+            self.vx *= 0.93
+            self.vy *= 0.93
         sp = math.sqrt(self.vx ** 2 + self.vy ** 2)
-        if sp > max_spd:
-            self.vx = self.vx / sp * max_spd
-            self.vy = self.vy / sp * max_spd
+        ship_spd = math.sqrt(ship.vx ** 2 + ship.vy ** 2) if ship else 0
+        cap = max(max_spd, ship_spd + 200)
+        if sp > cap:
+            self.vx = self.vx / sp * cap
+            self.vy = self.vy / sp * cap
         self.angle = math.atan2(self.vy, self.vx)
         self.x += self.vx * dt
         self.y += self.vy * dt
@@ -1040,9 +1065,10 @@ class Mission:
             self.target_count = 1
             self.current_count = 0
             self.reward = int(180 * scale + 30 * difficulty)
-            self.has_package = False  # True once picked up
+            self.has_package = False
+            self.target_station_name = None  # set when accepted
             self.name = f"Delivery Contract Lv.{difficulty}"
-            self.description = f"Carry package to sector [{self.target_sx},{self.target_sy}]. Dock there to deliver."
+            self.description = f"Deliver package — destination station to be assigned."
         elif mtype == 'escort':
             self.type = 'escort'
             self.target_count = 1
@@ -1113,10 +1139,35 @@ class World:
             return "Already on a mission! Complete or abandon it first."
         if index < 0 or index >= len(self.available_missions):
             return None
-        self.active_mission = self.available_missions[index]
-        self.active_mission.active = True
-        self.active_mission.current_count = 0
-        return f"Mission accepted: {self.active_mission.name}"
+        m = self.available_missions[index]
+        self.active_mission = m
+        m.active = True
+        m.current_count = 0
+        # For delivery, pick a real named station near the target sector
+        if m.type == 'delivery':
+            best_station = None
+            best_d = float('inf')
+            target_x = m.target_sx * SECTOR_SIZE + SECTOR_SIZE / 2
+            target_y = m.target_sy * SECTOR_SIZE + SECTOR_SIZE / 2
+            # Search wider radius — load sectors around the target
+            for dx in range(-2, 3):
+                for dy in range(-2, 3):
+                    sec = self.sectors.get_sector((m.target_sx + dx, m.target_sy + dy))
+                    if sec.station:
+                        d = dist(target_x, target_y, sec.station.x, sec.station.y)
+                        if d < best_d:
+                            best_d = d
+                            best_station = sec.station
+                            sec_coord = (m.target_sx + dx, m.target_sy + dy)
+            if best_station:
+                m.target_station_name = best_station.name
+                m.target_station_x = best_station.x
+                m.target_station_y = best_station.y
+                # Update target sector to the station's actual sector
+                m.target_sx = int(math.floor(best_station.x / SECTOR_SIZE))
+                m.target_sy = int(math.floor(best_station.y / SECTOR_SIZE))
+                m.description = f"Deliver to {best_station.name} [{m.target_sx},{m.target_sy}]"
+        return f"Mission accepted: {m.name}"
 
     def abandon_mission(self) -> Optional[str]:
         if not self.active_mission or self.active_mission.completed:

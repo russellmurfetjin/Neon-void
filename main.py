@@ -392,10 +392,10 @@ class Game:
                         log.error(f"MP overlay sync error: {e}")
                         self._last_mp_ov_err = self.time
                 if self.is_client and self.client and self.client.connected:
-                    # Client keeps sending idle input
                     self.client.send_input(
                         {'w': False, 's': False, 'a': False, 'd': False, 'shift': False},
-                        self.ship.x, self.ship.y, False, False, False
+                        self.ship.x, self.ship.y, False, False, False,
+                        fuel=self.ship.fuel
                     )
                 self.particles.update(dt)
 
@@ -447,7 +447,7 @@ class Game:
                          'a': keys[pygame.K_a], 'd': keys[pygame.K_d],
                          'shift': keys[pygame.K_LSHIFT]},
                         wmx, wmy,
-                        mouse_buttons[0], mouse_buttons[2], mouse_buttons[1]
+                        mouse_buttons[0], mouse_buttons[2], mouse_buttons[1], fuel=self.ship.fuel
                     )
 
                 # Engine particles
@@ -642,7 +642,8 @@ class Game:
                 self.station_ui.draw(self.screen, self.ship, self.time)
             elif self.sector_map.active:
                 self.sector_map.draw(self.screen, self.world.sectors, self.ship, self.time,
-                                    self._get_mp_players(), self.world.buildings)
+                                    self._get_mp_players(), self.world.buildings,
+                                    self.world.active_mission)
 
             # Multiplayer info overlay
             if self.is_host and self.server:
@@ -1052,6 +1053,49 @@ class Game:
                 self.particles.burst(px + math.cos(angle) * 20, py + math.sin(angle) * 20,
                                     8, 80, 0.2, NEON_PURPLE, 2)
 
+            elif action['type'] == 'build':
+                # Client requested to place a building (already paid client-side)
+                bid = action.get('bid')
+                wx, wy = action.get('x', 0), action.get('y', 0)
+                if bid in BUILDING_DEFS:
+                    defn = BUILDING_DEFS[bid]
+                    # Snap platforms
+                    if bid == 'platform':
+                        wx, wy, _ = self._snap_platform_position(wx, wy)
+                    # Validate placement (platform requirement, no overlap)
+                    valid = True
+                    if self._requires_platform(bid) and not self._on_platform(wx, wy):
+                        valid = False
+                    for b in self.world.buildings:
+                        if b.defn.id == 'platform' and bid != 'platform':
+                            continue
+                        if bid == 'platform' and b.defn.id != 'platform':
+                            continue
+                        if bid == 'platform' and b.defn.id == 'platform':
+                            min_dist = b.defn.radius * 1.6
+                        else:
+                            min_dist = b.defn.radius + defn.radius
+                        if dist(wx, wy, b.x, b.y) < min_dist:
+                            valid = False
+                            break
+                    if valid:
+                        building = Building(wx, wy, bid)
+                        if bid == 'beacon':
+                            building.label = f"Beacon {len([b for b in self.world.buildings if b.defn.id == 'beacon']) + 1}"
+                        self.world.buildings.append(building)
+                        self.particles.burst(wx, wy, 15, 80, 0.3, defn.glow, 2)
+
+            elif action['type'] == 'demolish':
+                wx, wy = action.get('x', 0), action.get('y', 0)
+                target = None
+                for b in self.world.buildings:
+                    if b.alive and dist(wx, wy, b.x, b.y) < b.defn.radius:
+                        target = b
+                        break
+                if target and target.defn.id != 'core':
+                    target.alive = False
+                    self.particles.burst(target.x, target.y, 25, 100, 0.5, target.defn.glow, 3)
+
     def _requires_platform(self, bid):
         """Buildings that must be placed on a platform (everything except platforms and barricades)."""
         return bid not in ('platform', 'barricade')
@@ -1104,6 +1148,25 @@ class Game:
             if d < b.defn.radius and d < best_d:
                 best_d = d
                 target = b
+        # Client: send demolish request to host, refund half locally
+        if self.is_client and self.client and self.client.connected:
+            if target:
+                refund = target.defn.cost // 2
+                self.ship.credits += refund
+                self.hud.notify(f"Demolish (+${refund})", NEON_GREEN, 1.5)
+                self.client.send_demolish(wx, wy)
+                self.audio.play('pickup', 0.4)
+            return
+        # Re-find target for host (overwrite stale target var)
+        target = None
+        best_d = float('inf')
+        for b in self.world.buildings:
+            if not b.alive:
+                continue
+            d = dist(wx, wy, b.x, b.y)
+            if d < b.defn.radius and d < best_d:
+                best_d = d
+                target = b
         if not target:
             return
         # Prevent removing platform if buildings are on it
@@ -1140,6 +1203,13 @@ class Game:
         defn = BUILDING_DEFS[bid]
         if self.ship.credits < defn.cost:
             self.hud.notify(f"Need ${defn.cost} for {defn.name}", NEON_RED, 1.5)
+            return
+        # Client: deduct credits locally and send build request to host
+        if self.is_client and self.client and self.client.connected:
+            self.ship.credits -= defn.cost
+            self.client.send_build(bid, wx, wy)
+            self.hud.notify(f"Placing {defn.name} (-${defn.cost})", NEON_GREEN, 1.5)
+            self.audio.play('buy', 0.5)
             return
         # Platforms snap to attachment points of other platforms
         snapped_platform = False
@@ -1614,25 +1684,32 @@ class Game:
                          self._get_mp_players())
 
     def _draw_indicators(self):
-        # Drone target indicator
+        # Drone target indicator (handles enemies, asteroids, remote players)
         t = getattr(self.ship, 'drone_target', None)
-        if t and not t.alive:
-            self.ship.drone_target = None
-            t = None
+        if t is not None:
+            # Validate target still exists/alive
+            alive = getattr(t, 'alive', True)
+            depleted = getattr(t, 'depleted', False)
+            if not alive or depleted:
+                self.ship.drone_target = None
+                t = None
         if t:
-            sx, sy = self.camera.world_to_screen(t.x, t.y)
-            r = (t.radius + 8) * self.camera.zoom
-            pulse = 0.6 + 0.4 * math.sin(self.time * 6)
-            tc = safe_color(255 * pulse, 255 * pulse, 0)
-            # Diamond brackets
-            for dx, dy in [(-r, -r), (r, -r), (r, r), (-r, r)]:
-                pygame.draw.line(self.screen, tc,
-                               (int(sx + dx), int(sy + dy)),
-                               (int(sx + dx * 0.6), int(sy + dy)), 2)
-                pygame.draw.line(self.screen, tc,
-                               (int(sx + dx), int(sy + dy)),
-                               (int(sx + dx), int(sy + dy * 0.6)), 2)
-            draw_text(self.screen, "TARGET", int(sx), int(sy - r - 14), tc, 10, center=True)
+            try:
+                sx, sy = self.camera.world_to_screen(t.x, t.y)
+                r_val = getattr(t, 'radius', 18)
+                r = (r_val + 8) * self.camera.zoom
+                pulse = 0.6 + 0.4 * math.sin(self.time * 6)
+                tc = safe_color(255 * pulse, 255 * pulse, 0)
+                for dx, dy in [(-r, -r), (r, -r), (r, r), (-r, r)]:
+                    pygame.draw.line(self.screen, tc,
+                                   (int(sx + dx), int(sy + dy)),
+                                   (int(sx + dx * 0.6), int(sy + dy)), 2)
+                    pygame.draw.line(self.screen, tc,
+                                   (int(sx + dx), int(sy + dy)),
+                                   (int(sx + dx), int(sy + dy * 0.6)), 2)
+                draw_text(self.screen, "TARGET", int(sx), int(sy - r - 14), tc, 10, center=True)
+            except Exception:
+                self.ship.drone_target = None
 
         if self.ship.docked:
             return
