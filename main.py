@@ -177,6 +177,12 @@ class Game:
                         self.pause_menu.show_save_result(success)
                     elif result == 'update':
                         self._check_for_update()
+                    elif result == 'host mp':
+                        if self.is_host or self.is_client:
+                            self.hud.notify("Already in multiplayer!", NEON_ORANGE, 2.0)
+                        else:
+                            self.pause_menu.active = False
+                            self.lobby.open_host()
                     elif result == 'menu':
                         save_game(self)
                         self._stop_multiplayer()
@@ -236,7 +242,7 @@ class Game:
                     elif event.key == pygame.K_b:
                         self.build_mode = not self.build_mode
                         if self.build_mode:
-                            self.hud.notify("BUILD MODE — Scroll to select, LMB to place, B to exit", NEON_PURPLE, 3.0)
+                            self.hud.notify("BUILD MODE — LMB:place, RMB:demolish, Scroll:select, B:exit", NEON_PURPLE, 3.0)
                     elif event.key == pygame.K_k:
                         skins = ['default', 'arrowhead', 'battleship', 'stealth', 'raptor']
                         idx = skins.index(self.ship.skin) if self.ship.skin in skins else 0
@@ -251,6 +257,10 @@ class Game:
                         mx2, my2 = pygame.mouse.get_pos()
                         wmx2, wmy2 = self.camera.screen_to_world(mx2, my2)
                         self._try_place_building(wmx2, wmy2)
+                    elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
+                        mx2, my2 = pygame.mouse.get_pos()
+                        wmx2, wmy2 = self.camera.screen_to_world(mx2, my2)
+                        self._try_demolish_building(wmx2, wmy2)
                 # Zoom with scroll wheel (when not in build mode or station)
                 elif (event.type == pygame.MOUSEWHEEL and
                       not self.station_ui.active and not self.sector_map.active):
@@ -284,7 +294,54 @@ class Game:
                 self.time += dt  # keep time ticking for animations
                 continue
 
-            if not self.station_ui.active and not self.sector_map.active:
+            # In multiplayer, keep the world running even during overlays so others don't freeze
+            overlay_active = self.station_ui.active or self.sector_map.active or self.chest_ui.active
+            if overlay_active and (self.is_host or self.is_client):
+                # Minimal update: keep world sim + multiplayer sync alive
+                self.world.update(dt, self.ship, self.particles, self.audio, self.camera)
+                if self.is_host and self.server:
+                    self.server.update_players(dt, self.ship)
+                    self._process_remote_combat()
+                    self._process_pvp(dt)
+                    self.server.beams_snapshot = [
+                        {'sx': b['sx'], 'sy': b['sy'], 'ex': b['ex'], 'ey': b['ey'],
+                         'color': list(b['color']), 'life': b['life']}
+                        for b in self.world._active_beams
+                    ]
+                    self.server.projectiles_snapshot = [
+                        {'x': round(p.x, 1), 'y': round(p.y, 1),
+                         'vx': round(p.vx, 1), 'vy': round(p.vy, 1),
+                         'type': p.proj_type, 'color': list(p.color)}
+                        for p in self.world.projectiles if p.alive and p.owner in ('player', 'remote_player')
+                    ][:30]
+                    self.server.probes_snapshot = [
+                        {'x': round(p.x, 1), 'y': round(p.y, 1),
+                         'state': p.state, 'cargo': round(p.cargo, 1)}
+                        for p in self.world.probes if p.alive
+                    ]
+                    sorted_enemies = sorted(self.world.enemies,
+                        key=lambda e: (e.x - self.ship.x)**2 + (e.y - self.ship.y)**2)
+                    self.server.enemies_snapshot = [
+                        {'x': round(e.x, 1), 'y': round(e.y, 1),
+                         'angle': round(e.angle, 2), 'hp': round(e.hp, 1),
+                         'max_hp': round(e.max_hp, 1), 'r': e.radius,
+                         'c': list(e.color), 'bc': list(e.body_color),
+                         'et': e.enemy_type, 'b': e.is_boss}
+                        for e in sorted_enemies[:20] if e.alive
+                    ]
+                    self.server.depleted_asteroids = [
+                        (round(a.x, 1), round(a.y, 1))
+                        for a in self.world.asteroids if a.depleted
+                    ]
+                if self.is_client and self.client and self.client.connected:
+                    # Client keeps sending idle input
+                    self.client.send_input(
+                        {'w': False, 's': False, 'a': False, 'd': False, 'shift': False},
+                        self.ship.x, self.ship.y, False, False, False
+                    )
+                self.particles.update(dt)
+
+            if not self.station_ui.active and not self.sector_map.active and not self.chest_ui.active:
                 # Get mouse in world coords
                 mx, my = pygame.mouse.get_pos()
                 wmx, wmy = self.camera.screen_to_world(mx, my)
@@ -540,7 +597,8 @@ class Game:
                 self.station_ui.open(sector.station, self.world)
                 self.audio.play('dock', 0.5)
                 self.hud.notify(f"Docked at {sector.station.name} (auto-saved)", NEON_CYAN, 2.0)
-                save_game(self)  # auto-save on dock
+                self.world.track_delivery(self.ship)
+                save_game(self)
                 return
 
         # Try POI interaction
@@ -905,6 +963,76 @@ class Game:
                     return b
         return None
 
+    def _snap_platform_position(self, wx, wy):
+        """Snap platform placement to attachment points of existing platforms.
+        Returns (snap_x, snap_y, snapped_bool)."""
+        from game.building import BUILDING_DEFS
+        plat_r = BUILDING_DEFS['platform'].radius
+        best_snap = None
+        best_d = 80
+
+        # For edge-to-edge hex tiling, neighbors are perpendicular to edge midpoints
+        # Hex vertices at 0°, 60°, 120°... so edges midpoints at 30°, 90°, 150°...
+        # Center-to-center distance = 2 * r * cos(30°) = r * sqrt(3)
+        edge_dist = plat_r * math.sqrt(3)
+
+        for b in self.world.buildings:
+            if not (b.alive and b.defn.id == 'platform'):
+                continue
+            for i in range(6):
+                ang = math.pi / 6 + i * math.pi / 3  # 30°, 90°, 150°...
+                ax = b.x + math.cos(ang) * edge_dist
+                ay = b.y + math.sin(ang) * edge_dist
+                d = dist(wx, wy, ax, ay)
+                if d < best_d:
+                    best_d = d
+                    best_snap = (ax, ay)
+
+        if best_snap:
+            return best_snap[0], best_snap[1], True
+        return wx, wy, False
+
+    def _try_demolish_building(self, wx, wy):
+        """Remove a building, refund 50% cost. For chests, transfers contents to ship."""
+        target = None
+        best_d = float('inf')
+        for b in self.world.buildings:
+            if not b.alive:
+                continue
+            d = dist(wx, wy, b.x, b.y)
+            if d < b.defn.radius and d < best_d:
+                best_d = d
+                target = b
+        if not target:
+            return
+        # Prevent removing platform if buildings are on it
+        if target.defn.id == 'platform':
+            for other in self.world.buildings:
+                if other is target or not other.alive:
+                    continue
+                if other.defn.id == 'platform':
+                    continue
+                if dist(other.x, other.y, target.x, target.y) < target.defn.radius:
+                    self.hud.notify("Remove buildings on platform first!", NEON_RED, 2.0)
+                    return
+        # Chest: return contents to ship before demolishing
+        if target.defn.id == 'chest':
+            if target.stored_credits > 0:
+                self.ship.credits += target.stored_credits
+            if target.stored_ore > 0:
+                space = self.ship.ore_capacity - self.ship.ore
+                self.ship.ore += min(target.stored_ore, space)
+            if target.stored_modules:
+                for mid, lvl in target.stored_modules:
+                    self.hud.notify(f"Lost stored module ({mid}) - no space", NEON_RED, 3.0)
+                    break
+        refund = target.defn.cost // 2
+        self.ship.credits += refund
+        self.particles.burst(target.x, target.y, 25, 100, 0.5, target.defn.glow, 3)
+        self.audio.play('pickup', 0.4)
+        self.hud.notify(f"Demolished {target.defn.name} (+${refund})", NEON_GREEN, 1.5)
+        target.alive = False
+
     def _try_place_building(self, wx, wy):
         """Place a building at world position."""
         bid = self.build_list[self.build_selected]
@@ -912,20 +1040,28 @@ class Game:
         if self.ship.credits < defn.cost:
             self.hud.notify(f"Need ${defn.cost} for {defn.name}", NEON_RED, 1.5)
             return
+        # Platforms snap to attachment points of other platforms
+        snapped_platform = False
+        if bid == 'platform':
+            wx, wy, snapped_platform = self._snap_platform_position(wx, wy)
         # Platform requirement check
         if self._requires_platform(bid) and not self._on_platform(wx, wy):
             self.hud.notify(f"{defn.name} must be placed on a Platform!", NEON_RED, 2.0)
             return
-        # Check not too close to another building (skip for barricades — they can line up)
+        # Check not too close to another building
         for b in self.world.buildings:
-            # Platforms can overlap with buildings on them
             if b.defn.id == 'platform' and bid != 'platform':
                 continue
             if bid == 'platform' and b.defn.id != 'platform':
                 continue
-            min_dist = b.defn.radius + defn.radius
-            if bid == 'barricade' or b.defn.id == 'barricade':
-                min_dist = max(defn.radius, b.defn.radius) + 5  # barricades can be tight
+            # Platform-to-platform: allow adjacent (edge-to-edge snap)
+            if bid == 'platform' and b.defn.id == 'platform':
+                # Slightly less than hex edge-to-edge distance (sqrt(3) ≈ 1.732)
+                min_dist = b.defn.radius * 1.6
+            elif bid == 'barricade' or b.defn.id == 'barricade':
+                min_dist = max(defn.radius, b.defn.radius) + 5
+            else:
+                min_dist = b.defn.radius + defn.radius
             if dist(wx, wy, b.x, b.y) < min_dist:
                 self.hud.notify("Too close to another structure", NEON_RED, 1.5)
                 return
@@ -1289,26 +1425,43 @@ class Game:
                                 pygame.draw.circle(self.screen, NEON_GREEN, (int(ax), int(ay)), 3)
                             pygame.draw.circle(self.screen, NEON_GREEN, (int(psx), int(psy)), 3)
 
+            # Platform snap preview
+            snap_mx, snap_my = mx, my
+            snapped = False
+            if bid == 'platform':
+                snap_wx, snap_wy, snapped = self._snap_platform_position(wmx, wmy)
+                if snapped:
+                    snap_mx, snap_my = self.camera.world_to_screen(snap_wx, snap_wy)
+
             # Preview circle
             can_afford = self.ship.credits >= defn.cost
-            platform_ok = (not self._requires_platform(bid)) or self._on_platform(wmx, wmy)
+            check_wx, check_wy = (snap_wx, snap_wy) if (bid == 'platform' and snapped) else (wmx, wmy)
+            platform_ok = (not self._requires_platform(bid)) or self._on_platform(check_wx, check_wy)
             if can_afford and platform_ok:
-                preview_c = NEON_GREEN
+                preview_c = NEON_CYAN if snapped else NEON_GREEN
             elif not platform_ok:
                 preview_c = NEON_ORANGE
             else:
                 preview_c = NEON_RED
-            pygame.draw.circle(self.screen, preview_c, (mx, my), defn.radius, 2)
-            draw_text(self.screen, f"{defn.name} (${defn.cost})", mx, my - defn.radius - 14,
+            # Draw preview at snapped position if applicable
+            px_preview, py_preview = (snap_mx, snap_my) if snapped else (mx, my)
+            preview_r = int(defn.radius * self.camera.zoom)
+            pygame.draw.circle(self.screen, preview_c, (int(px_preview), int(py_preview)), preview_r, 2)
+            if snapped:
+                # Show snap line
+                pygame.draw.line(self.screen, NEON_CYAN, (mx, my), (int(snap_mx), int(snap_my)), 1)
+                draw_text(self.screen, "SNAP", int(snap_mx), int(snap_my - preview_r - 26),
+                         NEON_CYAN, 10, center=True)
+            draw_text(self.screen, f"{defn.name} (${defn.cost})", int(px_preview), int(py_preview - preview_r - 14),
                      preview_c, 12, center=True)
             desc = defn.description
             if self._requires_platform(bid) and not platform_ok:
                 desc = "Requires a Platform!"
-            draw_text(self.screen, desc, mx, my + defn.radius + 8,
+            draw_text(self.screen, desc, int(px_preview), int(py_preview + preview_r + 8),
                      preview_c if not platform_ok else DIM_CYAN, 9, center=True)
             # Build bar
             by = 20
-            draw_text(self.screen, "BUILD MODE [B] — Scroll to select, LMB to place",
+            draw_text(self.screen, "BUILD MODE [B] — Scroll:select  LMB:place  RMB:demolish",
                      SCREEN_W // 2, by, NEON_PURPLE, 13, center=True)
             by += 20
             for i, bid2 in enumerate(self.build_list):

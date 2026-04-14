@@ -1298,7 +1298,7 @@ class PauseMenu:
     def __init__(self):
         self.active = False
         self.selected = 0
-        self.buttons = ['RESUME', 'SAVE', 'UPDATE', 'MENU', 'RESTART', 'QUIT']
+        self.buttons = ['RESUME', 'SAVE', 'HOST MP', 'UPDATE', 'MENU', 'RESTART', 'QUIT']
         self.save_msg = ""
         self.save_msg_timer = 0.0
         self.updater = None
@@ -1331,14 +1331,14 @@ class PauseMenu:
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             mx, my = event.pos
             for i, label in enumerate(self.buttons):
-                btn = pygame.Rect(SCREEN_W // 2 - 90, 260 + i * 55, 180, 42)
+                btn = pygame.Rect(SCREEN_W // 2 - 90, 230 + i * 45, 180, 36)
                 if btn.collidepoint(mx, my):
                     return label.lower()
 
         if event.type == pygame.MOUSEMOTION:
             mx, my = event.pos
             for i, label in enumerate(self.buttons):
-                btn = pygame.Rect(SCREEN_W // 2 - 90, 260 + i * 55, 180, 42)
+                btn = pygame.Rect(SCREEN_W // 2 - 90, 230 + i * 45, 180, 36)
                 if btn.collidepoint(mx, my):
                     self.selected = i
 
@@ -1369,7 +1369,7 @@ class PauseMenu:
 
         mx, my = pygame.mouse.get_pos()
         for i, label in enumerate(self.buttons):
-            btn = pygame.Rect(SCREEN_W // 2 - 90, 260 + i * 55, 180, 42)
+            btn = pygame.Rect(SCREEN_W // 2 - 90, 230 + i * 45, 180, 36)
             hover = btn.collidepoint(mx, my)
             selected = i == self.selected
 
@@ -1385,6 +1385,9 @@ class PauseMenu:
             elif label == 'SAVE':
                 base_color = NEON_GREEN
                 dim_color = DIM_GREEN
+            elif label == 'HOST MP':
+                base_color = NEON_PINK
+                dim_color = DIM_PINK
             else:
                 base_color = NEON_CYAN
                 dim_color = DIM_CYAN
@@ -1401,7 +1404,7 @@ class PauseMenu:
                      base_color if (selected or hover) else dim_color, 18, center=True)
 
         # Stats while paused
-        sy = 500
+        sy = 555
         draw_text(surface, "SESSION STATS", SCREEN_W // 2, sy, DIM_CYAN, 13, center=True)
         sy += 24
         stats = [

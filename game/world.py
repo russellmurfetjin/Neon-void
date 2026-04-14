@@ -566,6 +566,246 @@ class Enemy:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+#  DRONE — friendly AI drones spawned by drone bay modules
+# ═════════════════════════════════════════════════════════════════════════════
+class Drone:
+    def __init__(self, x, y, drone_type, owner_module):
+        self.x = x
+        self.y = y
+        self.vx = 0.0
+        self.vy = 0.0
+        self.drone_type = drone_type  # 'gun', 'kamikaze', 'laser'
+        self.owner_module = owner_module  # to track respawns
+        self.hp = 20 if drone_type == 'kamikaze' else 35
+        self.max_hp = self.hp
+        self.radius = 6
+        self.alive = True
+        self.angle = 0.0
+        self.fire_cooldown = 0.0
+        self.orbit_angle = random.uniform(0, math.pi * 2)
+        self.exploded = False
+
+    def update(self, dt, ship, enemies, projectiles, particles, active_beams):
+        if not self.alive:
+            return
+
+        # Find nearest enemy
+        best_enemy = None
+        best_d = 350
+        for e in enemies:
+            if not e.alive:
+                continue
+            d = dist(self.x, self.y, e.x, e.y)
+            if d < best_d:
+                best_d = d
+                best_enemy = e
+
+        self.fire_cooldown = max(0, self.fire_cooldown - dt)
+
+        if best_enemy:
+            # Engage enemy based on type
+            dx = best_enemy.x - self.x
+            dy = best_enemy.y - self.y
+            d = max(1, math.sqrt(dx * dx + dy * dy))
+            self.angle = math.atan2(dy, dx)
+
+            if self.drone_type == 'kamikaze':
+                # Ram the enemy
+                self.vx += (dx / d) * 600 * dt
+                self.vy += (dy / d) * 600 * dt
+                if d < best_enemy.radius + 10:
+                    # Explode!
+                    best_enemy.take_hit(40, particles)
+                    self.alive = False
+                    self.exploded = True
+                    particles.burst(self.x, self.y, 30, 200, 0.6, NEON_RED, 3)
+                    particles.burst(self.x, self.y, 15, 150, 0.4, NEON_YELLOW, 2)
+                    return
+            elif self.drone_type == 'gun':
+                # Orbit and shoot
+                ideal_d = 180
+                if d > ideal_d + 30:
+                    self.vx += (dx / d) * 300 * dt
+                    self.vy += (dy / d) * 300 * dt
+                elif d < ideal_d - 30:
+                    self.vx -= (dx / d) * 200 * dt
+                    self.vy -= (dy / d) * 200 * dt
+                else:
+                    # Strafe
+                    self.vx += (-dy / d) * 150 * dt
+                    self.vy += (dx / d) * 150 * dt
+                if self.fire_cooldown <= 0:
+                    self.fire_cooldown = 0.4
+                    proj = Projectile(
+                        self.x, self.y,
+                        math.cos(self.angle) * LASER_SPEED * 0.7,
+                        math.sin(self.angle) * LASER_SPEED * 0.7,
+                        6, 'player', 'bullet', color=NEON_YELLOW
+                    )
+                    projectiles.append(proj)
+            elif self.drone_type == 'laser':
+                # Stay at medium range and fire beams
+                ideal_d = 220
+                if d > ideal_d + 30:
+                    self.vx += (dx / d) * 250 * dt
+                    self.vy += (dy / d) * 250 * dt
+                elif d < ideal_d - 30:
+                    self.vx -= (dx / d) * 200 * dt
+                    self.vy -= (dy / d) * 200 * dt
+                if self.fire_cooldown <= 0:
+                    self.fire_cooldown = 0.8
+                    beam_range = 350
+                    bx = math.cos(self.angle)
+                    by = math.sin(self.angle)
+                    active_beams.append({
+                        'sx': self.x + bx * 8, 'sy': self.y + by * 8,
+                        'ex': self.x + bx * beam_range, 'ey': self.y + by * beam_range,
+                        'color': NEON_PINK, 'life': 0.15, 'width': 1,
+                    })
+                    best_enemy.take_hit(12, particles)
+        else:
+            # Orbit the player
+            self.orbit_angle += dt * 1.5
+            orbit_r = 60
+            target_x = ship.x + math.cos(self.orbit_angle) * orbit_r
+            target_y = ship.y + math.sin(self.orbit_angle) * orbit_r
+            dx = target_x - self.x
+            dy = target_y - self.y
+            d = max(1, math.sqrt(dx * dx + dy * dy))
+            self.vx += (dx / d) * 400 * dt
+            self.vy += (dy / d) * 400 * dt
+            self.angle = math.atan2(self.vy, self.vx) if d > 5 else self.angle
+
+        # Drag and speed cap
+        self.vx *= 0.93
+        self.vy *= 0.93
+        speed = math.sqrt(self.vx ** 2 + self.vy ** 2)
+        max_spd = 400 if self.drone_type == 'kamikaze' else 280
+        if speed > max_spd:
+            self.vx = self.vx / speed * max_spd
+            self.vy = self.vy / speed * max_spd
+
+        self.x += self.vx * dt
+        self.y += self.vy * dt
+
+    def take_hit(self, damage, particles):
+        self.hp -= damage
+        particles.burst(self.x, self.y, 4, 60, 0.2, self.color(), 1.5)
+        if self.hp <= 0:
+            self.alive = False
+            particles.burst(self.x, self.y, 15, 100, 0.3, self.color(), 2)
+
+    def color(self):
+        if self.drone_type == 'kamikaze':
+            return NEON_RED
+        if self.drone_type == 'laser':
+            return NEON_PINK
+        return NEON_YELLOW
+
+    def draw(self, surface, camera, time):
+        if not self.alive:
+            return
+        sx, sy = camera.world_to_screen(self.x, self.y)
+        z = camera.zoom
+        r = self.radius * z
+        c = self.color()
+        cos_a = math.cos(self.angle)
+        sin_a = math.sin(self.angle)
+        # Small triangle
+        pts = [
+            (sx + cos_a * r * 1.5, sy + sin_a * r * 1.5),
+            (sx - cos_a * r - sin_a * r * 0.8, sy - sin_a * r + cos_a * r * 0.8),
+            (sx - cos_a * r + sin_a * r * 0.8, sy - sin_a * r - cos_a * r * 0.8),
+        ]
+        pygame.draw.polygon(surface, (30, 30, 30), pts)
+        pygame.draw.polygon(surface, c, pts, 1)
+        draw_glow_circle(surface, c, (sx, sy), max(1, int(2 * z)), max(3, int(6 * z)), 40)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  ESCORT NPC — friendly ship you protect during escort missions
+# ═════════════════════════════════════════════════════════════════════════════
+class EscortNPC:
+    def __init__(self, x, y, dest_x, dest_y):
+        self.x = x
+        self.y = y
+        self.dest_x = dest_x
+        self.dest_y = dest_y
+        self.vx = 0.0
+        self.vy = 0.0
+        self.hp = 150
+        self.max_hp = 150
+        self.radius = 18
+        self.alive = True
+        self.angle = 0.0
+        self.hit_flash = 0.0
+        self.reached_dest = False
+
+    def update(self, dt, particles):
+        if not self.alive:
+            return
+        self.hit_flash = max(0, self.hit_flash - dt * 5)
+        dx = self.dest_x - self.x
+        dy = self.dest_y - self.y
+        d = math.sqrt(dx * dx + dy * dy)
+        if d < 150:
+            self.reached_dest = True
+            self.vx *= 0.95
+            self.vy *= 0.95
+        else:
+            speed = 90.0
+            self.vx += (dx / d) * speed * dt * 2
+            self.vy += (dy / d) * speed * dt * 2
+            self.vx *= 0.97
+            self.vy *= 0.97
+            sp = math.sqrt(self.vx ** 2 + self.vy ** 2)
+            if sp > speed:
+                self.vx = self.vx / sp * speed
+                self.vy = self.vy / sp * speed
+            self.angle = math.atan2(self.vy, self.vx)
+        self.x += self.vx * dt
+        self.y += self.vy * dt
+
+    def take_hit(self, damage, particles):
+        self.hp -= damage
+        self.hit_flash = 1.0
+        particles.burst(self.x, self.y, 6, 80, 0.2, NEON_CYAN, 2)
+        if self.hp <= 0:
+            self.alive = False
+            particles.burst(self.x, self.y, 50, 200, 0.8, NEON_CYAN, 4)
+
+    def draw(self, surface, camera, time):
+        if not self.alive:
+            return
+        sx, sy = camera.world_to_screen(self.x, self.y)
+        z = camera.zoom
+        r = self.radius * z
+        cos_a = math.cos(self.angle)
+        sin_a = math.sin(self.angle)
+        # Rounded cargo ship shape
+        pts = [
+            (sx + cos_a * r * 1.3, sy + sin_a * r * 1.3),
+            (sx + cos_a * r * 0.5 - sin_a * r * 0.8, sy + sin_a * r * 0.5 + cos_a * r * 0.8),
+            (sx - cos_a * r * 0.9 - sin_a * r * 0.9, sy - sin_a * r * 0.9 + cos_a * r * 0.9),
+            (sx - cos_a * r * 0.9 + sin_a * r * 0.9, sy - sin_a * r * 0.9 - cos_a * r * 0.9),
+            (sx + cos_a * r * 0.5 + sin_a * r * 0.8, sy + sin_a * r * 0.5 - cos_a * r * 0.8),
+        ]
+        body_c = (40, 60, 90)
+        if self.hit_flash > 0:
+            body_c = safe_color(lerp(body_c[0], 255, self.hit_flash),
+                               lerp(body_c[1], 255, self.hit_flash),
+                               lerp(body_c[2], 255, self.hit_flash))
+        pygame.draw.polygon(surface, body_c, pts)
+        pygame.draw.polygon(surface, NEON_CYAN, pts, 2)
+        # "ESCORT" label
+        draw_text(surface, "ALLY", int(sx), int(sy - r - 14), NEON_CYAN, 10, center=True)
+        # HP bar
+        if self.hp < self.max_hp:
+            draw_bar(surface, int(sx - r), int(sy - r - 5), int(r * 2), 4,
+                    self.hp / self.max_hp, NEON_CYAN, (20, 20, 30))
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 #  PICKUP
 # ═════════════════════════════════════════════════════════════════════════════
 class Pickup:
@@ -652,12 +892,14 @@ class Mission:
         self.failed = False
 
         # Pick mission type scaled by difficulty
-        if difficulty >= 5 and rng.random() < 0.4:
+        if difficulty >= 5 and rng.random() < 0.3:
             mtype = 'boss'
-        elif difficulty >= 3 and rng.random() < 0.3:
+        elif difficulty >= 3 and rng.random() < 0.25:
             mtype = 'kill_many'
+        elif difficulty >= 2 and rng.random() < 0.35:
+            mtype = rng.choice(['delivery', 'escort'])
         else:
-            mtype = rng.choice(['kill', 'mine', 'explore'])
+            mtype = rng.choice(['kill', 'mine', 'explore', 'delivery'])
 
         scale = 1.0 + difficulty * 0.4
         # Target sector: further away for harder missions
@@ -702,6 +944,23 @@ class Mission:
             self.reward = int(400 * scale)
             self.name = f"Bounty Hunt Lv.{difficulty}"
             self.description = f"Kill a boss-class enemy near sector [{self.target_sx},{self.target_sy}]."
+        elif mtype == 'delivery':
+            self.type = 'delivery'
+            self.target_count = 1
+            self.current_count = 0
+            self.reward = int(180 * scale + 30 * difficulty)
+            self.has_package = False  # True once picked up
+            self.name = f"Delivery Contract Lv.{difficulty}"
+            self.description = f"Carry package to sector [{self.target_sx},{self.target_sy}]. Dock there to deliver."
+        elif mtype == 'escort':
+            self.type = 'escort'
+            self.target_count = 1
+            self.current_count = 0
+            self.reward = int(350 * scale + 50 * difficulty)
+            self.escort_spawned = False
+            self.escort_alive = False
+            self.name = f"Escort Mission Lv.{difficulty}"
+            self.description = f"Protect an NPC ship to sector [{self.target_sx},{self.target_sy}]."
 
     @property
     def progress_text(self):
@@ -724,6 +983,8 @@ class World:
         self.probes: List[MiningProbe] = []
         self.pickups: List[Pickup] = []
         self.buildings: List[Building] = []
+        self.drones: List[Drone] = []
+        self.escort_npc: Optional[EscortNPC] = None
         self._active_beams: List[dict] = []
         self.game_time = 0.0
         self.void_titan_killed = False
@@ -783,6 +1044,76 @@ class World:
         self.active_mission = None
         self._generate_missions()  # refresh available missions
         return f"{name} COMPLETE! +${reward}"
+
+    def _update_drones(self, dt, ship, particles):
+        """Spawn and update AI drones from drone bay modules."""
+        # Count alive drones per owner module
+        counts = {}
+        for d in self.drones:
+            if d.alive:
+                counts[id(d.owner_module)] = counts.get(id(d.owner_module), 0) + 1
+
+        # Spawn missing drones for each drone bay module
+        for m in ship.drone_modules:
+            key = id(m)
+            target = m.defn.drone_count + (m.level - 1)  # +1 per upgrade level
+            current = counts.get(key, 0)
+            if current < target:
+                # Spawn one drone per frame until full
+                angle = random.uniform(0, math.pi * 2)
+                d = Drone(ship.x + math.cos(angle) * 30, ship.y + math.sin(angle) * 30,
+                         m.defn.drone_type, m)
+                self.drones.append(d)
+
+        # Update all drones
+        for d in self.drones:
+            d.update(dt, ship, self.enemies, self.projectiles, particles, self._active_beams)
+
+        # Remove dead drones
+        self.drones = [d for d in self.drones if d.alive]
+        """Spawn/update escort NPC for escort missions."""
+        m = self.active_mission
+        if not m or m.completed or m.type != 'escort':
+            # Clean up escort if no longer needed
+            if self.escort_npc:
+                self.escort_npc = None
+            return
+        # Spawn the NPC near the player once
+        if not m.escort_spawned:
+            dest_x = m.target_sx * SECTOR_SIZE + SECTOR_SIZE / 2
+            dest_y = m.target_sy * SECTOR_SIZE + SECTOR_SIZE / 2
+            # Spawn near player
+            self.escort_npc = EscortNPC(
+                ship.x + 100, ship.y, dest_x, dest_y
+            )
+            m.escort_spawned = True
+            m.escort_alive = True
+        # Update the NPC
+        if self.escort_npc:
+            self.escort_npc.update(dt, particles)
+            # Check if enemies are hitting the escort
+            for p in self.projectiles:
+                if p.owner == 'enemy' and p.alive and self.escort_npc.alive:
+                    if dist(p.x, p.y, self.escort_npc.x, self.escort_npc.y) < self.escort_npc.radius:
+                        self.escort_npc.take_hit(p.damage, particles)
+                        p.alive = False
+            # Fail mission if escort dies
+            if not self.escort_npc.alive:
+                m.failed = True
+                m.current_count = -1  # signal failed state
+            # Complete mission if escort reaches destination
+            elif self.escort_npc.reached_dest:
+                m.current_count = m.target_count
+
+    def track_delivery(self, ship):
+        """Check if player is delivering a package at a station."""
+        m = self.active_mission
+        if not m or m.completed or m.type != 'delivery':
+            return
+        # Player is docking at target sector
+        cur_coord = self.sectors.get_sector_coord(ship.x, ship.y)
+        if cur_coord == (m.target_sx, m.target_sy):
+            m.current_count = m.target_count
 
     def track_kill(self, enemy):
         """Call when an enemy is killed to update mission + multiplayer scoring."""
@@ -1412,6 +1743,18 @@ class World:
                     audio.play('hit', 0.4)
                     camera.shake(5)
 
+        # Collision: enemy projectiles vs drones
+        for p in self.projectiles:
+            if p.owner != 'enemy' or not p.alive:
+                continue
+            for d in self.drones:
+                if not d.alive:
+                    continue
+                if dist(p.x, p.y, d.x, d.y) < d.radius + 3:
+                    d.take_hit(p.damage, particles)
+                    p.alive = False
+                    break
+
         # Collision: ALL projectiles vs asteroids (asteroids block everything)
         for p in self.projectiles:
             if not p.alive:
@@ -1455,6 +1798,12 @@ class World:
         if ship.alive and not ship.docked:
             self.fire_turrets(ship, particles, audio)
             self.fire_autolasers(ship, particles, audio, camera)
+
+        # Update escort NPC (for escort missions)
+        self._update_escort_mission(dt, ship, particles)
+
+        # Maintain drones — spawn if below count, update existing
+        self._update_drones(dt, ship, particles)
 
         # Update buildings
         for b in self.buildings:
@@ -1536,9 +1885,14 @@ class World:
                 if -50 < px < SCREEN_W + 50 and -50 < py < SCREEN_H + 50:
                     poi.draw(surface, camera, time)
 
-        # Buildings
+        # Platforms first (so other buildings draw on top)
         for b in self.buildings:
-            b.draw(surface, camera, time)
+            if b.defn.id == 'platform':
+                b.draw(surface, camera, time)
+        # Other buildings on top of platforms
+        for b in self.buildings:
+            if b.defn.id != 'platform':
+                b.draw(surface, camera, time)
 
         # Asteroids
         for a in self.asteroids:
@@ -1564,6 +1918,14 @@ class World:
         for e in self.enemies:
             if vis.collidepoint(e.x, e.y) or dist(e.x, e.y, vis.centerx, vis.centery) < e.radius + 200:
                 e.draw(surface, camera, time)
+
+        # Escort NPC
+        if self.escort_npc and self.escort_npc.alive:
+            self.escort_npc.draw(surface, camera, time)
+
+        # Drones
+        for d in self.drones:
+            d.draw(surface, camera, time)
 
         # Laser beams (optimized — no per-beam full-screen surfaces)
         for beam in self._active_beams:

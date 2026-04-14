@@ -76,6 +76,11 @@ class Station:
         if 'research' in self.stock:
             self.stock['research'] = max(self.stock['research'], 1)
 
+        # Save max stock for restocking
+        self.max_stock = dict(self.stock)
+        self.restock_timer = 0.0
+        self.restock_interval = 60.0  # every 60 seconds
+
         # Visual
         self.rotation = 0.0
         self.ring_anim = 0.0
@@ -83,6 +88,15 @@ class Station:
     def update(self, dt):
         self.rotation += dt * 0.2
         self.ring_anim += dt
+        # Restock one random depleted item every restock_interval
+        self.restock_timer += dt
+        if self.restock_timer >= self.restock_interval:
+            self.restock_timer = 0.0
+            if hasattr(self, 'max_stock'):
+                # Restore +1 to each item that's below max (gradually refills)
+                for mid, max_qty in self.max_stock.items():
+                    if self.stock.get(mid, 0) < max_qty:
+                        self.stock[mid] = self.stock.get(mid, 0) + 1
 
     def draw(self, surface, camera, time):
         sx, sy = camera.world_to_screen(self.x, self.y)

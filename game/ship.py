@@ -33,6 +33,8 @@ class ModuleDef:
     armor: float = 0.0
     hull_regen: float = 0.0
     probe_count: int = 0
+    drone_type: str = ''  # 'gun', 'kamikaze', 'laser'
+    drone_count: int = 0
 
 
 MODULE_DEFS: Dict[str, ModuleDef] = {}
@@ -109,6 +111,14 @@ _reg(ModuleDef("Nano Repair Bay", "repair_2", 1, 2, (50, 100, 50), (100, 255, 10
                "Advanced repair system. +6 HP/sec.", hull_regen=6.0))
 _reg(ModuleDef("Emergency Kit", "repair_3", 1, 1, (80, 60, 30), NEON_ORANGE, 90,
                "Boosts max hull by 30 and repairs 1 HP/sec.", hp=30, hull_regen=1.0))
+
+# Drone Bays (summon AI combat drones)
+_reg(ModuleDef("Drone Bay (Gun)", "drone_gun", 1, 2, (60, 60, 20), NEON_YELLOW, 280,
+               "Spawns 2 gun drones that shoot enemies.", drone_type='gun', drone_count=2))
+_reg(ModuleDef("Kamikaze Bay", "drone_kami", 1, 1, (80, 30, 30), NEON_RED, 220,
+               "Spawns 3 kamikaze drones that ram enemies.", drone_type='kamikaze', drone_count=3))
+_reg(ModuleDef("Drone Bay (Laser)", "drone_laser", 1, 2, (80, 30, 30), NEON_PINK, 400,
+               "Spawns 2 laser drones. Beams enemies.", drone_type='laser', drone_count=2))
 
 # Probe
 _reg(ModuleDef("Probe Bay", "probe_bay", 1, 1, (50, 60, 50), NEON_GREEN, 80,
@@ -431,6 +441,11 @@ class Ship:
         """Mini auto-lasers — fire short beams at nearest enemy."""
         return [m for m in self.modules if m.active and m.defn.damage > 0
                 and 'autolaser' in m.defn.id]
+
+    @property
+    def drone_modules(self):
+        """Drone bays — spawn AI combat drones."""
+        return [m for m in self.modules if m.active and m.defn.drone_count > 0]
 
     def take_damage(self, amount):
         amount -= self.total_armor * 0.3
