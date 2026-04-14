@@ -76,7 +76,8 @@ class Game:
         self.build_mode = False
         self.build_selected = 0
         self.build_list = list(BUILDING_DEFS.keys())
-        self.respawn_enabled = True  # toggle on main menu
+        self.respawn_enabled = True
+        self.strip_on_respawn = False
         self.respawn_timer = 0.0
 
         self._new_game()
@@ -143,8 +144,10 @@ class Game:
                     result = self.menu.handle_event(event)
                     if result == 'new':
                         self.respawn_enabled = self.menu.respawn_enabled
+                        self.strip_on_respawn = self.menu.strip_on_respawn
                     elif result == 'continue':
                         self.respawn_enabled = self.menu.respawn_enabled
+                        self.strip_on_respawn = self.menu.strip_on_respawn
                         if load_game(self):
                             self.hud.notify("Save loaded!", NEON_GREEN, 2.0)
                         else:
@@ -431,14 +434,27 @@ class Game:
                     if self.respawn_enabled:
                         # Respawn at nearest station with penalty
                         self.ship.alive = True
+                        msg = f"DESTROYED! Respawned."
+                        if self.strip_on_respawn:
+                            # Strip all modules, restore starting loadout
+                            self.ship.modules.clear()
+                            self.ship.grid_w = 5
+                            self.ship.grid_h = 5
+                            self.ship._place_defaults()
+                            self.ship.credits = max(0, self.ship.credits // 2)
+                            self.ship.ore = 0
+                            self.ship.fuel = 20  # small fuel boost
+                            msg = "DESTROYED! Ship rebuilt from scratch."
+                        else:
+                            penalty = self.ship.credits // 3
+                            self.ship.credits -= penalty
+                            msg = f"DESTROYED! Respawned. Lost ${penalty}"
                         core = next((m for m in self.ship.modules if m.defn.id == "core"), None)
                         if core:
                             core.hp = core.max_hp
                         self.ship.shield = self.ship.max_shield
-                        penalty = self.ship.credits // 3
-                        self.ship.credits -= penalty
                         self._distress_warp()
-                        self.hud.notify(f"DESTROYED! Respawned. Lost ${penalty}", NEON_RED, 4.0)
+                        self.hud.notify(msg, NEON_RED, 4.0)
                     else:
                         self.game_over.activate(
                             len(self.world.sectors.discovered),
@@ -856,6 +872,18 @@ class Game:
                 self.particles.burst(px + math.cos(angle) * 20, py + math.sin(angle) * 20,
                                     8, 80, 0.2, NEON_PURPLE, 2)
 
+    def _requires_platform(self, bid):
+        """Buildings that must be placed on a platform (everything except platforms and barricades)."""
+        return bid not in ('platform', 'barricade')
+
+    def _on_platform(self, wx, wy):
+        """Check if position is within any platform's radius."""
+        for b in self.world.buildings:
+            if b.alive and b.defn.id == 'platform':
+                if dist(wx, wy, b.x, b.y) < b.defn.radius:
+                    return b
+        return None
+
     def _try_place_building(self, wx, wy):
         """Place a building at world position."""
         bid = self.build_list[self.build_selected]
@@ -863,9 +891,21 @@ class Game:
         if self.ship.credits < defn.cost:
             self.hud.notify(f"Need ${defn.cost} for {defn.name}", NEON_RED, 1.5)
             return
-        # Check not too close to another building
+        # Platform requirement check
+        if self._requires_platform(bid) and not self._on_platform(wx, wy):
+            self.hud.notify(f"{defn.name} must be placed on a Platform!", NEON_RED, 2.0)
+            return
+        # Check not too close to another building (skip for barricades — they can line up)
         for b in self.world.buildings:
-            if dist(wx, wy, b.x, b.y) < b.defn.radius + defn.radius:
+            # Platforms can overlap with buildings on them
+            if b.defn.id == 'platform' and bid != 'platform':
+                continue
+            if bid == 'platform' and b.defn.id != 'platform':
+                continue
+            min_dist = b.defn.radius + defn.radius
+            if bid == 'barricade' or b.defn.id == 'barricade':
+                min_dist = max(defn.radius, b.defn.radius) + 5  # barricades can be tight
+            if dist(wx, wy, b.x, b.y) < min_dist:
                 self.hud.notify("Too close to another structure", NEON_RED, 1.5)
                 return
         self.ship.credits -= defn.cost
@@ -1232,14 +1272,41 @@ class Game:
             wmx, wmy = self.camera.screen_to_world(mx, my)
             bid = self.build_list[self.build_selected]
             defn = BUILDING_DEFS[bid]
+
+            # Highlight all platforms so user can see where to build
+            if self._requires_platform(bid):
+                for pb in self.world.buildings:
+                    if pb.alive and pb.defn.id == 'platform':
+                        psx, psy = self.camera.world_to_screen(pb.x, pb.y)
+                        if -100 < psx < SCREEN_W + 100 and -100 < psy < SCREEN_H + 100:
+                            pulse = 0.5 + 0.5 * math.sin(self.time * 4)
+                            hc = safe_color(0, 255 * pulse, 150 * pulse)
+                            pygame.draw.circle(self.screen, hc, (int(psx), int(psy)), pb.defn.radius, 1)
+                            # Draw attachment points (6 hex corners + center)
+                            for i in range(6):
+                                ang = i * math.pi / 3
+                                ax = psx + math.cos(ang) * pb.defn.radius * 0.7
+                                ay = psy + math.sin(ang) * pb.defn.radius * 0.7
+                                pygame.draw.circle(self.screen, NEON_GREEN, (int(ax), int(ay)), 3)
+                            pygame.draw.circle(self.screen, NEON_GREEN, (int(psx), int(psy)), 3)
+
             # Preview circle
             can_afford = self.ship.credits >= defn.cost
-            preview_c = NEON_GREEN if can_afford else NEON_RED
+            platform_ok = (not self._requires_platform(bid)) or self._on_platform(wmx, wmy)
+            if can_afford and platform_ok:
+                preview_c = NEON_GREEN
+            elif not platform_ok:
+                preview_c = NEON_ORANGE
+            else:
+                preview_c = NEON_RED
             pygame.draw.circle(self.screen, preview_c, (mx, my), defn.radius, 2)
             draw_text(self.screen, f"{defn.name} (${defn.cost})", mx, my - defn.radius - 14,
                      preview_c, 12, center=True)
-            draw_text(self.screen, defn.description, mx, my + defn.radius + 8,
-                     DIM_CYAN, 9, center=True)
+            desc = defn.description
+            if self._requires_platform(bid) and not platform_ok:
+                desc = "Requires a Platform!"
+            draw_text(self.screen, desc, mx, my + defn.radius + 8,
+                     preview_c if not platform_ok else DIM_CYAN, 9, center=True)
             # Build bar
             by = 20
             draw_text(self.screen, "BUILD MODE [B] — Scroll to select, LMB to place",

@@ -1584,6 +1584,7 @@ class MainMenu:
         self.stars_offset = 0.0
         self.has_save = False
         self.respawn_enabled = True
+        self.strip_on_respawn = False
         self._check_save()
 
     def _check_save(self):
@@ -1625,6 +1626,11 @@ class MainMenu:
             resp_rect = pygame.Rect(SCREEN_W // 2 - 80, mp_y + 42, 160, 28)
             if resp_rect.collidepoint(mx, my):
                 self.respawn_enabled = not self.respawn_enabled
+            # Strip modules on respawn toggle
+            if self.respawn_enabled:
+                strip_rect = pygame.Rect(SCREEN_W // 2 - 80, mp_y + 74, 160, 28)
+                if strip_rect.collidepoint(mx, my):
+                    self.strip_on_respawn = not self.strip_on_respawn
         return None
 
     def draw(self, surface, time):
@@ -1689,7 +1695,15 @@ class MainMenu:
         draw_text(surface, f"Respawn: {'ON' if self.respawn_enabled else 'OFF (permadeath)'}",
                  resp_rect.centerx, resp_rect.centery, resp_c, 11, center=True)
 
-        controls_y = SCREEN_H // 2 + (215 if self.has_save else 175)
+        # Strip modules on respawn toggle (only shown if respawn on)
+        if self.respawn_enabled:
+            strip_rect = pygame.Rect(SCREEN_W // 2 - 80, mp_y + 74, 160, 28)
+            strip_c = NEON_ORANGE if self.strip_on_respawn else DIM_CYAN
+            draw_neon_rect(surface, strip_c, strip_rect, 1)
+            label = "Strip Modules: ON (hardcore)" if self.strip_on_respawn else "Strip Modules: OFF"
+            draw_text(surface, label, strip_rect.centerx, strip_rect.centery, strip_c, 10, center=True)
+
+        controls_y = SCREEN_H // 2 + (255 if self.has_save else 215)
         controls = [
             "WASD - Fly your ship        SHIFT - Boost",
             "RMB - Laser beam (pierces!)  MMB - Homing missiles",

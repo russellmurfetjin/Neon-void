@@ -140,10 +140,17 @@ class Building:
             # Large hex platform
             pts = []
             for i in range(6):
-                angle = self.rotation + i * math.pi / 3
+                angle = i * math.pi / 3
                 pts.append((sx + math.cos(angle) * r, sy + math.sin(angle) * r))
             pygame.draw.polygon(surface, self.defn.color, pts)
             pygame.draw.polygon(surface, self.defn.glow, pts, 1)
+            # Attachment point markers (small dim dots)
+            for i in range(6):
+                angle = i * math.pi / 3
+                ax = sx + math.cos(angle) * r * 0.7
+                ay = sy + math.sin(angle) * r * 0.7
+                pygame.draw.circle(surface, (50, 80, 100), (int(ax), int(ay)), 2)
+            pygame.draw.circle(surface, (50, 80, 100), (int(sx), int(sy)), 2)
 
         elif bid == 'repair_pad':
             # Green cross
